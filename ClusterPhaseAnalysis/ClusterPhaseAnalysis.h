@@ -43,7 +43,7 @@ class ClusterPhaseAnalysis : public SubsysReco
   void processTracks();
   bool checkTrack(SvtxTrack *track);
   void FillClusters(SvtxTrack *track);
-  int getNodes(PHCompositeNode *topNode);
+  int  getNodes(PHCompositeNode *topNode);
   //int get_phase_from_hit(TrkrDefs::hitkey hitkey, TrkrDefs::hitsetkey hitsetkey, TrkrHitSetContainer *hitmap);
 
     SvtxTrackMap *trackmap = nullptr;
