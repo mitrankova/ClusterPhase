@@ -524,42 +524,44 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
      std::cout << "ClusterPhaseAnalysis::CalculatePhase -- No associated hits found for this cluster "<< std::endl;
     return;
   }
-  std::map<int, int> sum_by_tbin;
-  std::map<int, int> sum_by_pad;
-  int max_adc_sum_by_pad_idx =0,max_adc_sum_by_tbin_idx =0, max_adc_sum_by_pad = 0, max_adc_sum_by_tbin =0;
+  std::map<float, int> sum_by_tbin;
+  std::map<float, int> sum_by_pad;
+  //int max_adc_sum_by_pad_idx =0,max_adc_sum_by_tbin_idx =0;
+  int max_adc_sum_by_pad = 0, max_adc_sum_by_tbin =0;
   //int  max_adc_sum_by_pad_pad = -1, max_adc_sum_by_tbin_tbin=-1;
+  float max_adc_phi_bin = 0, max_adc_time_bin = 0;
 
   for (size_t i = 0; i < N; ++i) 
   {
-    sum_by_tbin[m_hit_tbin[i]] += static_cast<double>(m_hit_adc[i]);
-    sum_by_pad[m_hit_pad[i]] += static_cast<double>(m_hit_adc[i]);
+    sum_by_tbin[m_hit_time[i]] += static_cast<double>(m_hit_adc[i]);
+    sum_by_pad[m_hit_phi[i]] += static_cast<double>(m_hit_adc[i]);
   }
 
-  int i = 0;
+
   for (const auto& entry : sum_by_pad) 
   {
     if (entry.second > max_adc_sum_by_pad) 
     {
         max_adc_sum_by_pad = entry.second;
+        max_adc_phi_bin = entry.first; 
         //max_adc_sum_by_pad_pad = entry.first;
-        max_adc_sum_by_pad_idx = i;
     }
   }
-  float max_adc_phi = m_hit_phi[max_adc_sum_by_pad_idx];
+  float max_adc_phi = max_adc_phi_bin;
   float dNdPhase_phi = (float)(m_cluster_phi - max_adc_phi)/(phiwidth);
 
-  i = 0;
+
   for (const auto& entry : sum_by_tbin) 
   {
     if (entry.second > max_adc_sum_by_tbin) 
     {
         max_adc_sum_by_tbin = entry.second;
+        max_adc_time_bin = entry.first;
         //max_adc_sum_by_tbin_tbin = entry.first;
-        max_adc_sum_by_tbin_idx = i;
     }
   }
   
-  float max_adc_time = m_hit_time[max_adc_sum_by_tbin_idx];
+  float max_adc_time = max_adc_time_bin;
   float dNdPhase_time = (float)(m_cluster_time- max_adc_time)/(twidth);
 
   m_cluster_phase_phi =dNdPhase_phi;
