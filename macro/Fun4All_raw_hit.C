@@ -91,9 +91,9 @@ class SkipFirstN : public SubsysReco {
 void Fun4All_raw_hit(
     const int nEvents = 37,
     const std::string filelist = "/sphenix/user/mitrankova/ClusterPhase/filelists/filelist_00072592_00000.list",
-    const std::string outfilename = "Au_Au_37th_evt",
+    const std::string outfilename = "Au_Au_30_37th_evt",
     const bool convertSeeds = false,
-    const int nSkip = 35)
+    const int nSkip = 30)
 {
   auto se = Fun4AllServer::instance();
   se->Verbosity(2);
@@ -254,11 +254,12 @@ void Fun4All_raw_hit(
   Intt_Clustering();
 
   Tpc_LaserEventIdentifying();
-
+  G4TPC::DO_HIT_ASSOCIATION = true;
   auto tpcclusterizer = new TpcClusterizer;
   tpcclusterizer->Verbosity(0);
-  tpcclusterizer->set_do_hit_association(G4TPC::DO_HIT_ASSOCIATION);
+  
   tpcclusterizer->set_rawdata_reco();
+  tpcclusterizer->set_do_hit_association(true);
   tpcclusterizer->set_reject_event(G4TPC::REJECT_LASER_EVENTS);
   se->registerSubsystem(tpcclusterizer);
 
@@ -505,9 +506,9 @@ void Fun4All_raw_hit(
 
     ClusterPhaseAnalysis *ana = new ClusterPhaseAnalysis("ClusterPhaseAnalysis", phasestring);
     ana->Verbosity(10);
+    ana->setIsSimulation(false);
   // Set cluster container name if different from default
   // ana->set_cluster_container_name("TRKR_CLUSTER");
-  
     se->registerSubsystem(ana);
    
   //auto ntuplizer = new TrkrNtuplizer("TrkrNtuplizer");
