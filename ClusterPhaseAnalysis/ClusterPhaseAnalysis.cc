@@ -194,7 +194,7 @@ int ClusterPhaseAnalysis::process_event(PHCompositeNode* /*topNode*/)
 //___________________________________________________________________________________
 void ClusterPhaseAnalysis::processTracks()
 {
-    
+    std::cout<<"\n=========================================================="<<std::endl;
     if (Verbosity())
     {
         std::cout << "ClusterPhaseAnalysis::processTracks - proto track size " << trackmap->size() << std::endl;
@@ -271,8 +271,10 @@ bool ClusterPhaseAnalysis::checkTrack(SvtxTrack* track)
 //___________________________________________________________________________________
 void ClusterPhaseAnalysis::FillClusters(SvtxTrack* track)
 {
+  
     if (Verbosity())
     {
+
         std::cout << "ClusterPhaseAnalysis::FillClusters for track " << std::endl;
     }
      m_vdrift = geometry->get_drift_velocity();
@@ -281,6 +283,7 @@ void ClusterPhaseAnalysis::FillClusters(SvtxTrack* track)
     {
       
       auto *cluster = clustermap->findCluster(cluskey);
+      std::cout<<"\n---------------------------------------------------------"<<std::endl;
       std::cout<<"        TPC cluster with key: "<<cluskey<<std::endl;
       if (!cluster)
       {
@@ -472,6 +475,7 @@ std::cout << "Total TPC associated hits counted via per-cluster queries: "
         TrkrHit *hit = hitset->getHit(hitkey);
        // std::cout<<"   TPC hit with key: "<<hitkey<<" pad: "<<hitpad<<" tbin: "<<hittbin <<" adc: "<<hit->getAdc()<<std::endl;
         auto hitphi = geoLayer->get_phicenter(hitpad, hitside);
+        auto hitt =  geoLayer->get_zcenter(hittbin);
         auto hitradius = geoLayer->get_radius();
         float AdcClockPeriod = geoLayer->get_zstep();
         auto glob = geometry->getGlobalPositionTpc(hskey, hitkey, hitphi, hitradius, AdcClockPeriod);
@@ -492,7 +496,8 @@ std::cout << "Total TPC associated hits counted via per-cluster queries: "
         m_hit_z.push_back(hitgz);
         m_hit_phi.push_back(hitphi);
         m_hit_r.push_back(hitradius);
-        m_hit_time.push_back(hittbin*AdcClockPeriod);
+        m_hit_time.push_back(hitt);
+       // m_hit_time.push_back(hittbin*AdcClockPeriod);
        
   }
 }
@@ -513,10 +518,7 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
   float twidth = geoLayer->get_zstep();
   const size_t N = m_hit_adc.size();
 
-  if (Verbosity())
-  {
-      std::cout << "ClusterPhaseAnalysis::CalculatePhase -- Cluster phi size = "<< m_cluster_size_phi <<"  Cluster t size = "<<m_cluster_size_time<< std::endl;
-  }
+ 
   if (N == 0) 
   {
     m_cluster_phase_phi = std::numeric_limits<float>::quiet_NaN();
@@ -535,24 +537,28 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
   {
     sum_by_tbin[m_hit_time[i]] += static_cast<double>(m_hit_adc[i]);
     sum_by_pad[m_hit_phi[i]] += static_cast<double>(m_hit_adc[i]);
+    std::cout<<"   hit phi "<<m_hit_phi[i]<<" time "<<m_hit_time[i]<<" adc "<<m_hit_adc[i]<<std::endl;
   }
 
 
   for (const auto& entry : sum_by_pad) 
   {
+    std::cout<<"   phi "<<entry.first<<" adc sum "<<entry.second<<std::endl;
     if (entry.second > max_adc_sum_by_pad) 
     {
         max_adc_sum_by_pad = entry.second;
         max_adc_phi_bin = entry.first; 
+      
         //max_adc_sum_by_pad_pad = entry.first;
     }
   }
-  float max_adc_phi = max_adc_phi_bin;
-  float dNdPhase_phi = (float)(m_cluster_phi - max_adc_phi)/(phiwidth);
+
+  float dNdPhase_phi = (float)(m_cluster_phi - max_adc_phi_bin)/(phiwidth);
 
 
   for (const auto& entry : sum_by_tbin) 
   {
+    std::cout<<"   time "<<entry.first<<" adc sum "<<entry.second<<std::endl;
     if (entry.second > max_adc_sum_by_tbin) 
     {
         max_adc_sum_by_tbin = entry.second;
@@ -560,17 +566,33 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
         //max_adc_sum_by_tbin_tbin = entry.first;
     }
   }
-  
-  float max_adc_time = max_adc_time_bin;
-  float dNdPhase_time = (float)(m_cluster_time- max_adc_time)/(twidth);
 
-  m_cluster_phase_phi =dNdPhase_phi;
-  m_cluster_phase_time = dNdPhase_time;
+  float dNdPhase_time = (float)(m_cluster_time- max_adc_time_bin)/(twidth);
+
   m_cluster_size_phi = sum_by_pad.size();
   m_cluster_size_time = sum_by_tbin.size();
-               // dNdPhase = std::round(dNdPhase * 100) / 100;
-                //float phi_truth = atan2(gy_clust_truth, gx_clust_truth);
-  
+  m_cluster_phase_phi =dNdPhase_phi;
+  m_cluster_phase_time = dNdPhase_time;
+  if ((m_cluster_size_phi==2 && std::fabs(dNdPhase_phi)>0.5)||(m_cluster_size_phi==3 &&  std::fabs(dNdPhase_phi)>1)||(m_cluster_size_phi==4 &&  std::fabs(dNdPhase_phi)>1.5)||(m_cluster_size_phi==5 &&  std::fabs(dNdPhase_phi)>2))
+  {
+        m_cluster_phase_phi =0;
+        m_cluster_phase_time =0;
+        m_cluster_size_phi = 0;
+        m_cluster_size_time = 0;
+        std::cout<<"ClusterPhaseAnalysis::CalculatePhase -- ALARM! "<<std::endl;
+        for(size_t i=0; i <  N ; ++i) 
+        {
+            std::cout<<"   hit pad "<<m_hit_pad[i]<<" time bin "<<m_hit_tbin[i]<<" adc "<<m_hit_adc[i]<<";   hit phi "<<m_hit_phi[i]<<" time "<<m_hit_time[i]<<std::endl;
+        }
+  }
+ if (Verbosity())
+  {
+      std::cout << "ClusterPhaseAnalysis::CalculatePhase -- Cluster phi size = "<< m_cluster_size_phi <<"  Cluster t size = "<<m_cluster_size_time<< std::endl;
+
+      std::cout<<"Cluster phi "<<m_cluster_phi<<" phase "<<dNdPhase_phi<<" max adc phi "<<max_adc_phi_bin<<" adc sum "<<max_adc_sum_by_pad<<" phiwidth "<<phiwidth<<std::endl;
+      std::cout<<"Cluster time "<<m_cluster_time<<" phase time "<<dNdPhase_time<<" max adc time "<<max_adc_time_bin<<" adc sum "<<max_adc_sum_by_tbin<<" timebinwidth "<<twidth<<std::endl;
+      std::cout<<"\n---------------------------------------------------------"<<std::endl;
+  }
 }
 //_____________________________________________________________________________________________
 
