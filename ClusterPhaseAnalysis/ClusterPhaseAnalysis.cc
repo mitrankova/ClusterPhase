@@ -11,7 +11,7 @@
 #include <trackbase/TrkrHit.h>
 #include <trackbase/TrkrHitSet.h>
 #include <trackbase/TrkrHitSetContainer.h>
-#include <trackbase/TrkrClusterHitAssoc.h>
+#include <trackbase/TrkrClusterHitAssocv3.h>
 #include <trackbase/ActsGeometry.h>  
 #include <trackbase_historic/SvtxTrack.h>
 #include <trackbase_historic/SvtxTrackMap.h>
@@ -20,8 +20,11 @@
 
 
 #include <g4detectors/PHG4CylinderGeomContainer.h>
-#include <g4detectors/PHG4TpcCylinderGeom.h>
-#include <g4detectors/PHG4TpcCylinderGeomContainer.h>
+//#include <g4detectors/PHG4TpcCylinderGeom.h>
+//#include <g4detectors/PHG4TpcCylinderGeomContainer.h>
+
+#include <g4detectors/PHG4TpcGeom.h>
+#include <g4detectors/PHG4TpcGeomContainer.h>
 
 #include <TFile.h>
 #include <TTree.h>
@@ -68,6 +71,120 @@ namespace
 
     return out;
   }
+
+
+  // ------ existing helpers (square, r, get_cluster_keys) stay here ------
+
+  // Small epsilon for numeric safety
+  inline double eps() { return 1e-12; }
+
+  // Taubin circle fit in XY (y vs x)
+  // Returns true on success and fills xc, yc, R
+  bool fitCircleTaubinXY(const std::vector<std::pair<double,double> >& pts,
+                         double& xc, double& yc, double& R)
+  {
+    const size_t n = pts.size();
+    if (n < 3) return false;
+
+    // 1) Compute centroid
+    double meanx = 0.0, meany = 0.0;
+    for (size_t i = 0; i < n; ++i) { meanx += pts[i].first; meany += pts[i].second; }
+    meanx /= double(n);
+    meany /= double(n);
+
+    // 2) Centralized moments
+    double Suu=0, Suv=0, Svv=0, Suuu=0, Svvv=0, Suvv=0, Svuu=0;
+    for (size_t i = 0; i < n; ++i)
+    {
+      const double u = pts[i].first  - meanx;
+      const double v = pts[i].second - meany;
+      const double uu = u*u;
+      const double vv = v*v;
+      Suu  += uu;
+      Svv  += vv;
+      Suv  += u*v;
+      Suuu += uu*u;
+      Svvv += vv*v;
+      Suvv += u*vv;
+      Svuu += v*uu;
+    }
+
+    // 3) Solve linear system for (uc, vc) in centered coordinates
+    const double A = Suu;
+    const double B = Suv;
+    const double C = Svv;
+    const double D = 0.5*(Suuu + Suvv);
+    const double E = 0.5*(Svvv + Svuu);
+
+    const double det = A*C - B*B;
+    if (std::fabs(det) < eps()) return false;
+
+    const double uc = (D*C - B*E)/det;
+    const double vc = (A*E - B*D)/det;
+
+    xc = meanx + uc;
+    yc = meany + vc;
+
+    // 4) Radius
+    double r2mean = 0.0;
+    for (size_t i = 0; i < n; ++i)
+    {
+      const double dx = pts[i].first  - xc;
+      const double dy = pts[i].second - yc;
+      r2mean += dx*dx + dy*dy;
+    }
+    r2mean /= double(n);
+    R = (r2mean > 0.0) ? std::sqrt(r2mean) : 0.0;
+
+    return (R > 0.0);
+  }
+
+  // Intersect fitted circle (xc,yc,R) with origin-centered circle of radius rLayer.
+  // Returns up to 2 points in outPts. True if intersection exists.
+  bool intersectTwoCircles(double xc, double yc, double R, double rLayer,
+                           std::pair<double,double>& p1,
+                           std::pair<double,double>& p2,
+                           bool& twoSolutions)
+  {
+    const double d = std::sqrt(xc*xc + yc*yc);
+    // No intersection: too far or one circle contained in the other
+    if (d < eps()) // concentric, treat specially
+    {
+      if (std::fabs(R - rLayer) < eps()) {
+        // Infinite intersections; degenerate; return false to avoid ambiguity
+        return false;
+      } else {
+        return false;
+      }
+    }
+    if (d > R + rLayer + 1e-9) return false;
+    if (d < std::fabs(R - rLayer) - 1e-9) return false;
+
+    // a: distance from origin to the chord midpoint along c-hat
+    const double a = (rLayer*rLayer + d*d - R*R) / (2.0*d);
+    const double h2 = rLayer*rLayer - a*a;
+    if (h2 < -1e-10) return false; // numerical
+    const double h = (h2 <= 0.0) ? 0.0 : std::sqrt(std::max(0.0, h2));
+
+    // Unit vector from origin to (xc,yc)
+    const double ux = xc/d;
+    const double uy = yc/d;
+
+    // Base point on the line connecting origins
+    const double x2 = a*ux;
+    const double y2 = a*uy;
+
+    // Perpendicular unit vector
+    const double px = -uy;
+    const double py =  ux;
+
+    // Two intersection points
+    p1 = std::make_pair(x2 + h*px, y2 + h*py);
+    p2 = std::make_pair(x2 - h*px, y2 - h*py);
+    twoSolutions = (h > eps());
+    return true;
+  }
+
 
 
 }  // namespace
@@ -182,7 +299,13 @@ int ClusterPhaseAnalysis::process_event(PHCompositeNode* /*topNode*/)
   {
     std::cout << "ClusterPhaseAnalysis::process_event - Processing event " << m_event << std::endl;
   }
-
+  if(clusterhitassocmap->size() == 0){
+      std::cout << "WARNING:TRKR_CLUSTERHITASSOC is empty! Skip event" << std::endl;
+      return Fun4AllReturnCodes::ABORTEVENT;
+  }else{
+    std::cout << "TRKR_CLUSTERHITASSOC has size "<< clusterhitassocmap->size() << std::endl;
+  }
+ // clusterhitassocmap->identify();
   processTracks();
 
   return Fun4AllReturnCodes::EVENT_OK;
@@ -214,8 +337,9 @@ void ClusterPhaseAnalysis::processTracks()
         
         if (checkTrack(track))
         {
-
+            if(!isSimulation) ComputeFitTruthAtLayer(track);
             FillClusters(track);
+            
 
         }
     }
@@ -320,7 +444,7 @@ void ClusterPhaseAnalysis::FillClusters(SvtxTrack* track)
       if(isSimulation){
         FindTruthClusters(cluskey, glob);
       }
-      
+
 
       reset_tree_vars();
 
@@ -329,6 +453,8 @@ void ClusterPhaseAnalysis::FillClusters(SvtxTrack* track)
       FillHits(cluskey);  
       CalculatePhase(cluskey);
 
+      m_cluster_residual_rphi = residual_rphi_map.count(cluskey) ? residual_rphi_map[cluskey] : NAN;
+      m_cluster_residual_time = residual_time_map.count(cluskey) ? residual_time_map[cluskey] : NAN;
 
       std::cout<<"FILL TREE"<<std::endl;
       m_tree->Fill();
@@ -406,6 +532,7 @@ void ClusterPhaseAnalysis::FillHits(uint64_t ckey)
     return;
   }
 
+
   /*
 
   size_t total_assoc_tpc = 0;
@@ -437,13 +564,23 @@ std::cout << "Total TPC associated hits counted via per-cluster queries: "
 */
 
   uint32_t hskey = TrkrDefs::getHitSetKeyFromClusKey(ckey);
+  std::cout<<" hskey: "<<hskey<<std::endl;
   TrkrHitSet *hitset = hitmap->findHitSet(hskey);
+  std::cout<<" hitset: "<<hitset<<std::endl;
 
   int hitlayer = TrkrDefs::getLayer(hskey);
   int hitside = TpcDefs::getSide(hskey);
-  auto *geoLayer = tpcGeom->GetLayerCellGeom(hitlayer);
+  std::cout<<" hitlayer: "<<hitlayer<<" hitside: "<<hitside<<std::endl;
+
+
+
+
+  
+     std::cout <<"clusterhitassocmap size "<< clusterhitassocmap->size()<<std::endl;
 
   auto hitrange = clusterhitassocmap->getHits(ckey);
+
+
  /* if(!isSimulation){
     const auto idx   = TrkrDefs::getClusIndex(ckey);
     const TrkrDefs::hitsetkey hs_layer_only = static_cast<TrkrDefs::hitsetkey>(hitlayer);
@@ -451,16 +588,17 @@ std::cout << "Total TPC associated hits counted via per-cluster queries: "
     hitrange = clusterhitassocmap->getHits(cluskey_layer);
 
   }*/
-  /*if (Verbosity())
-  {
+  //if (Verbosity())
+  //{
       std::cout << "ClusterPhaseAnalysis::FillHits -- Number of hits: "<<hitmap->size()<<" Number of associated hits: " << std::distance(hitrange.first, hitrange.second)<<" ( "<<clusterhitassocmap->size()<<" )" << std::endl;
-  }*/
+  //}
   /*const auto det    = TrkrDefs::getTrkrId(hskey);
   if (det != TrkrDefs::tpcId) {
     std::cerr << "Non-TPC assoc encountered, skipping (det=" << int(det) << ")\n";
     return;
   }*/
-
+    auto *geoLayer = tpcGeom->GetLayerCellGeom(hitlayer);
+    geoLayer->identify();
   for (auto hit_iter = hitrange.first; hit_iter != hitrange.second; ++hit_iter)
   {
         // std::cout<<"clus key: "<<hit_iter->first<<" hit key "<<hit_iter->second<<" pad = "<<static_cast<uint16_t>((hit_iter->second >> 16) & 0xFFFF)<<" tbin = "<<static_cast<uint16_t>((hit_iter->second ) & 0xFFFF)<<std::endl;
@@ -595,6 +733,104 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
   }
 }
 //_____________________________________________________________________________________________
+void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
+{
+  const int minPointsForFit = 10;
+  const int nLayerSkip = 1;
+
+  // --- Step 1: Collect XY points per region (R1, R2, R3) ---
+  std::array<std::vector<std::pair<double,double>>, 3> ptsXY;
+
+  const auto clusterKeys = get_cluster_keys(track);
+  ptsXY[0].reserve(64); ptsXY[1].reserve(64); ptsXY[2].reserve(64);
+
+for (const auto& ckey : clusterKeys)
+{
+  const unsigned int layer = TrkrDefs::getLayer(ckey);
+  const int region = (int)(layer - 7) / 16;
+  if (region < 0 || region > 2) continue;
+
+  const unsigned int regionFirst = 7 + static_cast<unsigned int>(region) * 16;
+  const unsigned int regionLast  = regionFirst + 15;
+
+  if (layer <= regionFirst + static_cast<unsigned int>(nLayerSkip) ||
+      layer >= regionLast  - static_cast<unsigned int>(nLayerSkip))
+    continue;
+
+  TrkrCluster* c = clustermap->findCluster(ckey);
+  if (!c) continue;
+
+  const Acts::Vector3 g = geometry->getGlobalPosition(ckey, c);
+  ptsXY[region].emplace_back(g.x(), g.y());
+}
+
+
+  // --- Step 2: Fit circles for all regions ---
+  double Xc[3] = {0}, Yc[3] = {0}, R[3] = {0};
+  for (int i = 0; i < 3; ++i)
+  {
+    if (ptsXY[i].size() < static_cast<size_t>(minPointsForFit))
+      return; // abort if any region lacks enough clusters
+
+    if (!fitCircleTaubinXY(ptsXY[i], Xc[i], Yc[i], R[i]))
+      return;
+  }
+
+  // --- Step 3: Loop again to compute truth positions per cluster ---
+  for (const auto& ckey : clusterKeys)
+  {
+    const unsigned int layer = TrkrDefs::getLayer(ckey);
+    const int region = (layer - 7) / 16;
+    if (region < 0 || region > 2) continue;
+
+   auto* geoLayer = tpcGeom->GetLayerCellGeom(layer);
+    if (!geoLayer) continue;
+    const double rLayer = geoLayer->get_radius();
+
+    TrkrCluster* c = clustermap->findCluster(ckey);
+    if (!c) continue;
+
+    const Acts::Vector3 g = geometry->getGlobalPosition(ckey, c);
+    const double cx = g.x(), cy = g.y(), phiReco = std::atan2(cy, cx), rReco = std::hypot(cx, cy);
+
+    std::pair<double,double> P1, P2;
+    bool twoSol = false;
+    if (!intersectTwoCircles(Xc[region], Yc[region], R[region], rLayer, P1, P2, twoSol))
+      continue;
+
+    // Pick intersection closest in azimuth
+    const double phi1 = std::atan2(P1.second, P1.first);
+    double pickx = P1.first, picky = P1.second;
+    if (twoSol)
+    {
+      const double phi2 = std::atan2(P2.second, P2.first);
+      if (std::fabs(std::remainder(phiReco - phi2, 2.0*M_PI)) <
+          std::fabs(std::remainder(phiReco - phi1, 2.0*M_PI)))
+      {
+        pickx = P2.first; picky = P2.second;
+      }
+    }
+
+    // --- Fill "fit-truth" info ---
+    const double rFit = std::hypot(pickx, picky);
+    const double phiFit = std::atan2(picky, pickx);
+
+    m_truth_cluster_x    = float(pickx);
+    m_truth_cluster_y    = float(picky);
+    m_truth_cluster_z    = float(g.z());          // keep z same as cluster
+    m_truth_cluster_r    = float(rFit);
+    m_truth_cluster_phi  = float(phiFit);
+    m_truth_cluster_time = m_cluster_time;
+
+    // --- Residuals ---
+  //  m_cluster_residual_rphi  = float(rReco * std::remainder(phiReco - phiFit, 2.0*M_PI));
+    //m_cluster_residual_time  = std::numeric_limits<float>::quiet_NaN();
+    residual_rphi_map[ckey] = float(rReco * std::remainder(phiReco - phiFit, 2.0*M_PI));
+    residual_time_map[ckey] = std::numeric_limits<float>::quiet_NaN();
+  }
+}
+
+//_____________________________________________________________________________________________
 
 int ClusterPhaseAnalysis::End(PHCompositeNode* /*topNode*/)
 {
@@ -625,13 +861,15 @@ int ClusterPhaseAnalysis::getNodes(PHCompositeNode* topNode)
       truthClustersmap = findNode::getClass<TrkrClusterContainer>(topNode, "TRKR_TRUTHCLUSTERCONTAINER");
     }
     hitmap = findNode::getClass<TrkrHitSetContainer>(topNode, "TRKR_HITSET");
-    tpcGeom = findNode::getClass<PHG4TpcCylinderGeomContainer>(topNode, "CYLINDERCELLGEOM_SVTX");
+   // tpcGeom = findNode::getClass<PHG4TpcCylinderGeomContainer>(topNode, "CYLINDERCELLGEOM_SVTX");
+    tpcGeom = findNode::getClass<PHG4TpcGeomContainer>(topNode, "TPCGEOMCONTAINER");
     clusterhitassocmap = findNode::getClass<TrkrClusterHitAssoc>(topNode, "TRKR_CLUSTERHITASSOC");
     if (!clusterhitassocmap)
     {
       std::cerr << "ERROR: Can't find TRKR_CLUSTERHITASSOC node!" << std::endl;
       return Fun4AllReturnCodes::ABORTRUN;
     }
+    std::cout<<" TRKR_CLUSTERHITASSOC size "<<clusterhitassocmap->size()<<std::endl;
     
     return Fun4AllReturnCodes::EVENT_OK;
 }

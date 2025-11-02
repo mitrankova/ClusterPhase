@@ -17,7 +17,8 @@ class TrkrClusterContainer;
 class TrkrHitSetContainer;
 class TrkrClusterHitAssoc;
 class TrkrHitSetContainer;
-class PHG4TpcCylinderGeomContainer;
+//class PHG4TpcCylinderGeomContainer;
+class PHG4TpcGeomContainer;
 class PHG4CylinderGeomContainer;
 class SvtxTrack;
 class SvtxTrackMap;
@@ -47,6 +48,7 @@ class ClusterPhaseAnalysis : public SubsysReco
   void processTracks();
   bool checkTrack(SvtxTrack *track);
   void FillClusters(SvtxTrack *track);
+  void ComputeFitTruthAtLayer(SvtxTrack *track);
   void FindTruthClusters(uint64_t key, Acts::Vector3 glob);
   void FillHits(uint64_t ckey);
   void CalculatePhase(uint64_t ckey);
@@ -59,7 +61,8 @@ class ClusterPhaseAnalysis : public SubsysReco
     TrkrClusterContainer *truthClustersmap = nullptr;
     TrkrHitSetContainer *hitmap = nullptr;
     TrkrClusterHitAssoc *clusterhitassocmap = nullptr;
-    PHG4TpcCylinderGeomContainer *tpcGeom = nullptr;
+    //PHG4TpcCylinderGeomContainer *tpcGeom = nullptr;
+    PHG4TpcGeomContainer *tpcGeom = nullptr;
 
   // Output file and tree
   std::string m_outputFileName;
@@ -111,6 +114,8 @@ class ClusterPhaseAnalysis : public SubsysReco
 
   float m_cluster_residual_rphi = std::numeric_limits<float>::quiet_NaN();
   float m_cluster_residual_time = std::numeric_limits<float>::quiet_NaN();
+  std::map<TrkrDefs::cluskey, float> residual_rphi_map;
+  std::map<TrkrDefs::cluskey, float> residual_time_map;
 
   // Hit-level information ( vectors:   hits in that cluster)
   std::vector<uint32_t> m_hitkeys;
