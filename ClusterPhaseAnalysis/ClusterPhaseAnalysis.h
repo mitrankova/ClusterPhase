@@ -116,6 +116,9 @@ class ClusterPhaseAnalysis : public SubsysReco
   float m_cluster_residual_time = std::numeric_limits<float>::quiet_NaN();
   std::map<TrkrDefs::cluskey, float> residual_rphi_map;
   std::map<TrkrDefs::cluskey, float> residual_time_map;
+    std::map<TrkrDefs::cluskey, float> m_truth_cluster_x_map;
+  std::map<TrkrDefs::cluskey, float> m_truth_cluster_y_map;
+  std::map<TrkrDefs::cluskey, float> m_truth_cluster_z_map;
 
   // Hit-level information ( vectors:   hits in that cluster)
   std::vector<uint32_t> m_hitkeys;

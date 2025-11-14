@@ -16,6 +16,11 @@
 #include <trackbase_historic/SvtxTrack.h>
 #include <trackbase_historic/SvtxTrackMap.h>
 #include <trackbase_historic/TrackSeedContainer.h>
+#include <trackreco/ALICEKF.h>
+#include <trackreco/GPUTPCTrackParam.h>
+
+
+
 
 
 
@@ -74,42 +79,95 @@ namespace
 
 
   // ------ existing helpers (square, r, get_cluster_keys) stay here ------
+  struct SimpleKalmanState
+{
+  double x, y, z;     // position
+  double tx, ty;      // slopes dx/dz, dy/dz
+  double cov[5][5];   // covariance matrix
+};
+
+struct SimpleMeasurement
+{
+  double x, y, z;
+  double sigma2; // measurement variance
+};
+
 
   // Small epsilon for numeric safety
   inline double eps() { return 1e-12; }
 
   // Taubin circle fit in XY (y vs x)
   // Returns true on success and fills xc, yc, R
-  bool fitCircleTaubinXY(const std::vector<std::pair<double,double> >& pts,
-                         double& xc, double& yc, double& R)
+
+struct TrackCircleGuess {
+  double xc = 0.;
+  double yc = 0.;
+  double R  = 0.;
+};
+
+TrackCircleGuess initialCircleFromTrack(const SvtxTrack* track, double Bz_T)
+{
+  TrackCircleGuess out;
+  if (!track || std::fabs(Bz_T) < 1e-6) {
+    out.R = 1e9;
+    return out;
+  }
+
+  const double q = (track->get_charge() == 0 ? 1.0 : track->get_charge());
+  const double pt = std::max(1e-6, double(track->get_pt())); // GeV/c
+  const double phi0 = track->get_phi(); // rad
+  const double x0 = track->get_x();     // cm
+  const double y0 = track->get_y();     // cm
+
+  // pT [GeV/c], B [T]  →  R [m];  multiply by 100 to get cm
+  const double Rphys = 100.0 * pt / (0.3 * std::fabs(Bz_T)); // cm
+
+  // charge–field orientation: curvature sign
+  const double s = (q * Bz_T > 0) ? +1.0 : -1.0;
+
+  // circle center is 90° rotated from momentum direction
+  out.xc = x0 + s * Rphys * std::cos(phi0 + s * M_PI_2);
+  out.yc = y0 + s * Rphys * std::sin(phi0 + s * M_PI_2);
+  out.R  = Rphys;
+
+  std::cout<<" initialCircleFromTrack: xc "<<out.xc<<" yc "<<out.yc<<" R "<<out.R<<std::endl;
+
+  return out;
+}
+
+
+bool fitCircleTaubinXY(const std::vector<std::pair<double,double>>& pts,
+                       double& xc, double& yc, double& R)
+{
+  const size_t n = pts.size();
+  if (n < 3) return false;
+
+  auto runWeighted = [](const std::vector<std::pair<double,double>>& p,
+                        const std::vector<double>& w,
+                        double& xc_out, double& yc_out, double& R_out) -> bool
   {
-    const size_t n = pts.size();
-    if (n < 3) return false;
+    double sumw = 0., meanx = 0., meany = 0.;
+    for (size_t i=0;i<p.size();++i){
+      sumw += w[i];
+      meanx += p[i].first  * w[i];
+      meany += p[i].second * w[i];
+    }
+    meanx /= sumw;  meany /= sumw;
 
-    // 1) Compute centroid
-    double meanx = 0.0, meany = 0.0;
-    for (size_t i = 0; i < n; ++i) { meanx += pts[i].first; meany += pts[i].second; }
-    meanx /= double(n);
-    meany /= double(n);
-
-    // 2) Centralized moments
-    double Suu=0, Suv=0, Svv=0, Suuu=0, Svvv=0, Suvv=0, Svuu=0;
-    for (size_t i = 0; i < n; ++i)
-    {
-      const double u = pts[i].first  - meanx;
-      const double v = pts[i].second - meany;
-      const double uu = u*u;
-      const double vv = v*v;
-      Suu  += uu;
-      Svv  += vv;
-      Suv  += u*v;
-      Suuu += uu*u;
-      Svvv += vv*v;
-      Suvv += u*vv;
-      Svuu += v*uu;
+    double Suu=0.,Svv=0.,Suv=0.,Suuu=0.,Svvv=0.,Suvv=0.,Svuu=0.;
+    for (size_t i=0;i<p.size();++i){
+      const double wi = w[i];
+      const double u = p[i].first  - meanx;
+      const double v = p[i].second - meany;
+      Suu  += wi*u*u;
+      Svv  += wi*v*v;
+      Suv  += wi*u*v;
+      Suuu += wi*u*u*u;
+      Svvv += wi*v*v*v;
+      Suvv += wi*u*v*v;
+      Svuu += wi*v*u*u;
     }
 
-    // 3) Solve linear system for (uc, vc) in centered coordinates
     const double A = Suu;
     const double B = Suv;
     const double C = Svv;
@@ -117,73 +175,96 @@ namespace
     const double E = 0.5*(Svvv + Svuu);
 
     const double det = A*C - B*B;
-    if (std::fabs(det) < eps()) return false;
+    if (std::fabs(det) < 1e-14*(A*A + C*C)) return false;
 
-    const double uc = (D*C - B*E)/det;
-    const double vc = (A*E - B*D)/det;
+    const double uc = (D*C - B*E) / det;
+    const double vc = (A*E - B*D) / det;
 
-    xc = meanx + uc;
-    yc = meany + vc;
+    xc_out = meanx + uc;
+    yc_out = meany + vc;
 
-    // 4) Radius
-    double r2mean = 0.0;
-    for (size_t i = 0; i < n; ++i)
-    {
-      const double dx = pts[i].first  - xc;
-      const double dy = pts[i].second - yc;
-      r2mean += dx*dx + dy*dy;
+    double r2 = 0.;
+    for (size_t i=0;i<p.size();++i){
+      const double dx = p[i].first  - xc_out;
+      const double dy = p[i].second - yc_out;
+      r2 += w[i]*(dx*dx + dy*dy);
     }
-    r2mean /= double(n);
-    R = (r2mean > 0.0) ? std::sqrt(r2mean) : 0.0;
+    r2 /= sumw;
+    R_out = std::sqrt(std::max(r2,0.0));
+    return std::isfinite(R_out) && R_out>1e-6;
+  };
 
-    return (R > 0.0);
+  // --- initial unweighted ---
+  std::vector<double> w(n,1.0);
+  if(!runWeighted(pts,w,xc,yc,R)) return false;
+
+  // --- iterative robust weighting ---
+  const double huberK = 1.5; // cm cutoff
+  for(int iter=0; iter<3; ++iter)
+  {
+    std::vector<double> res(n);
+    for(size_t i=0;i<n;++i)
+      res[i] = std::fabs(std::hypot(pts[i].first - xc, pts[i].second - yc) - R);
+
+    for(size_t i=0;i<n;++i){
+      double r = res[i];
+      w[i] = (r<=huberK) ? 1.0 : huberK / r;
+    }
+
+    if(!runWeighted(pts,w,xc,yc,R)) break;
   }
+
+  return true;
+}
+
 
   // Intersect fitted circle (xc,yc,R) with origin-centered circle of radius rLayer.
   // Returns up to 2 points in outPts. True if intersection exists.
-  bool intersectTwoCircles(double xc, double yc, double R, double rLayer,
-                           std::pair<double,double>& p1,
-                           std::pair<double,double>& p2,
-                           bool& twoSolutions)
+// ---------- helper: circle-circle intersection ----------
+// Circle1: (xc,yc), R1 ; Circle2: (0,0), R2
+bool intersectTwoCircles(
+  double xc, double yc,
+  double R1,          // track circle radius
+  double R2,          // layer radius (around origin)
+  std::pair<double,double>& P1,
+  std::pair<double,double>& P2,
+  bool& twoSol)
+{
+  const double dx = xc;
+  const double dy = yc;
+  const double d  = std::hypot(dx, dy);
+  const double eps = 1e-9;
+
+  // no intersection (too far apart, contained, or degenerate)
+  if (d < eps || d > R1 + R2 + eps || d < std::fabs(R1 - R2) - eps)
   {
-    const double d = std::sqrt(xc*xc + yc*yc);
-    // No intersection: too far or one circle contained in the other
-    if (d < eps()) // concentric, treat specially
-    {
-      if (std::fabs(R - rLayer) < eps()) {
-        // Infinite intersections; degenerate; return false to avoid ambiguity
-        return false;
-      } else {
-        return false;
-      }
-    }
-    if (d > R + rLayer + 1e-9) return false;
-    if (d < std::fabs(R - rLayer) - 1e-9) return false;
-
-    // a: distance from origin to the chord midpoint along c-hat
-    const double a = (rLayer*rLayer + d*d - R*R) / (2.0*d);
-    const double h2 = rLayer*rLayer - a*a;
-    if (h2 < -1e-10) return false; // numerical
-    const double h = (h2 <= 0.0) ? 0.0 : std::sqrt(std::max(0.0, h2));
-
-    // Unit vector from origin to (xc,yc)
-    const double ux = xc/d;
-    const double uy = yc/d;
-
-    // Base point on the line connecting origins
-    const double x2 = a*ux;
-    const double y2 = a*uy;
-
-    // Perpendicular unit vector
-    const double px = -uy;
-    const double py =  ux;
-
-    // Two intersection points
-    p1 = std::make_pair(x2 + h*px, y2 + h*py);
-    p2 = std::make_pair(x2 - h*px, y2 - h*py);
-    twoSolutions = (h > eps());
-    return true;
+    twoSol = false;
+    return false;
   }
+
+  // *** THIS is the crucial line ***
+  // distance from origin (layer center) to the "base point" along the line to (xc,yc)
+  const double a = (R2*R2 - R1*R1 + d*d) / (2.0*d);
+  // (your version used R1^2 - R2^2 + d^2, which is reversed)
+
+  double h2 = R2*R2 - a*a;
+  if (h2 < 0.0) h2 = 0.0;
+  const double h = std::sqrt(h2);
+
+  // base point on the line from origin to (xc,yc)
+  const double px = (a/d) * dx;
+  const double py = (a/d) * dy;
+
+  // perpendicular offsets
+  const double offx = (h/d) * (-dy);
+  const double offy = (h/d) * ( dx);
+
+  P1 = std::make_pair(px + offx, py + offy);
+  P2 = std::make_pair(px - offx, py - offy);
+
+  twoSol = (h > eps);
+  return true;
+}
 
 
 
@@ -337,7 +418,7 @@ void ClusterPhaseAnalysis::processTracks()
         
         if (checkTrack(track))
         {
-            if(!isSimulation) ComputeFitTruthAtLayer(track);
+            if(!isSimulation) ComputeFitTruthAtLayer( track);
             FillClusters(track);
             
 
@@ -455,6 +536,9 @@ void ClusterPhaseAnalysis::FillClusters(SvtxTrack* track)
 
       m_cluster_residual_rphi = residual_rphi_map.count(cluskey) ? residual_rphi_map[cluskey] : NAN;
       m_cluster_residual_time = residual_time_map.count(cluskey) ? residual_time_map[cluskey] : NAN;
+      m_truth_cluster_x = m_truth_cluster_x_map.count(cluskey) ? m_truth_cluster_x_map[cluskey] : NAN;
+      m_truth_cluster_y = m_truth_cluster_y_map.count(cluskey) ? m_truth_cluster_y_map[cluskey] : NAN;
+      m_truth_cluster_z = m_truth_cluster_z_map.count(cluskey) ? m_truth_cluster_z_map[cluskey] : NAN;
 
       std::cout<<"FILL TREE"<<std::endl;
       m_tree->Fill();
@@ -735,100 +819,219 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
 //_____________________________________________________________________________________________
 void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
 {
-  const int minPointsForFit = 10;
-  const int nLayerSkip = 1;
+  if (!track || !geometry || !clustermap || !tpcGeom) return;
 
-  // --- Step 1: Collect XY points per region (R1, R2, R3) ---
-  std::array<std::vector<std::pair<double,double>>, 3> ptsXY;
+  // --- constants for region definition ---
+  const unsigned int first_tpc_layer = 7;
+  const unsigned int n_layers_region = 16;   // 3 regions of 16 layers each
+  const unsigned int last_tpc_layer  = first_tpc_layer + 3*n_layers_region - 1; // 7+48-1 = 54
 
-  const auto clusterKeys = get_cluster_keys(track);
-  ptsXY[0].reserve(64); ptsXY[1].reserve(64); ptsXY[2].reserve(64);
-
-for (const auto& ckey : clusterKeys)
-{
-  const unsigned int layer = TrkrDefs::getLayer(ckey);
-  const int region = (int)(layer - 7) / 16;
-  if (region < 0 || region > 2) continue;
-
-  const unsigned int regionFirst = 7 + static_cast<unsigned int>(region) * 16;
-  const unsigned int regionLast  = regionFirst + 15;
-
-  if (layer <= regionFirst + static_cast<unsigned int>(nLayerSkip) ||
-      layer >= regionLast  - static_cast<unsigned int>(nLayerSkip))
-    continue;
-
-  TrkrCluster* c = clustermap->findCluster(ckey);
-  if (!c) continue;
-
-  const Acts::Vector3 g = geometry->getGlobalPosition(ckey, c);
-  ptsXY[region].emplace_back(g.x(), g.y());
-}
-
-
-  // --- Step 2: Fit circles for all regions ---
-  double Xc[3] = {0}, Yc[3] = {0}, R[3] = {0};
-  for (int i = 0; i < 3; ++i)
+  // --- collect clusters for this track, grouped by region ---
+  struct RegionData
   {
-    if (ptsXY[i].size() < static_cast<size_t>(minPointsForFit))
-      return; // abort if any region lacks enough clusters
+    std::vector<std::pair<double,double> > pts;      // (x,y)
+    std::vector<TrkrDefs::cluskey>        keys;      // cluster keys in this region
+  };
 
-    if (!fitCircleTaubinXY(ptsXY[i], Xc[i], Yc[i], R[i]))
-      return;
-  }
+  RegionData regions[3];
+  std::vector<std::pair<double,double> > allPts;
 
-  // --- Step 3: Loop again to compute truth positions per cluster ---
-  for (const auto& ckey : clusterKeys)
+  const std::vector<TrkrDefs::cluskey> clusterKeys = get_cluster_keys(track);
+
+  for (size_t i = 0; i < clusterKeys.size(); ++i)
   {
+    const TrkrDefs::cluskey ckey = clusterKeys[i];
     const unsigned int layer = TrkrDefs::getLayer(ckey);
-    const int region = (layer - 7) / 16;
-    if (region < 0 || region > 2) continue;
 
-   auto* geoLayer = tpcGeom->GetLayerCellGeom(layer);
-    if (!geoLayer) continue;
-    const double rLayer = geoLayer->get_radius();
+    // only TPC layers
+    if (layer < first_tpc_layer || layer > last_tpc_layer) continue;
+
+    const unsigned int idx = (layer - first_tpc_layer) / n_layers_region;
+    if (idx > 2) continue;  // safety
 
     TrkrCluster* c = clustermap->findCluster(ckey);
     if (!c) continue;
 
     const Acts::Vector3 g = geometry->getGlobalPosition(ckey, c);
-    const double cx = g.x(), cy = g.y(), phiReco = std::atan2(cy, cx), rReco = std::hypot(cx, cy);
+    const double x = g.x();
+    const double y = g.y();
 
-    std::pair<double,double> P1, P2;
-    bool twoSol = false;
-    if (!intersectTwoCircles(Xc[region], Yc[region], R[region], rLayer, P1, P2, twoSol))
-      continue;
+    regions[idx].pts.push_back(std::make_pair(x,y));
+    regions[idx].keys.push_back(ckey);
+    allPts.push_back(std::make_pair(x,y));
+  }
 
-    // Pick intersection closest in azimuth
-    const double phi1 = std::atan2(P1.second, P1.first);
-    double pickx = P1.first, picky = P1.second;
-    if (twoSol)
+  // nothing to do if we have no TPC clusters
+  if (allPts.size() < 3) return;
+
+  // --- Step 1: global circle seed from track parameters ---
+  TrackCircleGuess init = initialCircleFromTrack(track, 1.4); // Bz ~ 1.4 T for sPHENIX
+
+  double xc_global = init.xc;
+  double yc_global = init.yc;
+  double R_global  = init.R;
+
+  // If track-based seed is bad, try a global Taubin fit on all points
+  {
+    double xc_tmp = xc_global;
+    double yc_tmp = yc_global;
+    double R_tmp  = R_global;
+
+    if (fitCircleTaubinXY(allPts, xc_tmp, yc_tmp, R_tmp))
     {
-      const double phi2 = std::atan2(P2.second, P2.first);
-      if (std::fabs(std::remainder(phiReco - phi2, 2.0*M_PI)) <
-          std::fabs(std::remainder(phiReco - phi1, 2.0*M_PI)))
+      xc_global = xc_tmp;
+      yc_global = yc_tmp;
+      R_global  = R_tmp;
+    }
+    // else keep init from track
+  }
+
+  // --- Step 2: fit per region with robust Taubin, constrained by the global circle ---
+  double xc_reg[3] = { xc_global, xc_global, xc_global };
+  double yc_reg[3] = { yc_global, yc_global, yc_global };
+  double R_reg[3]  = { R_global , R_global , R_global  };
+
+  const double max_rel_R_deviation = 0.30; // 30% deviation from global R allowed
+
+  for (int ireg = 0; ireg < 3; ++ireg)
+  {
+    std::vector<std::pair<double,double> >& pts = regions[ireg].pts;
+
+    if (pts.size() < 3)
+    {
+      // not enough points in this region -> use global circle
+      xc_reg[ireg] = xc_global;
+      yc_reg[ireg] = yc_global;
+      R_reg[ireg]  = R_global;
+      continue;
+    }
+
+    // Optionally pre-filter using global circle to remove obvious outliers
+    std::vector<std::pair<double,double> > use_pts;
+    use_pts.reserve(pts.size());
+    for (size_t ip = 0; ip < pts.size(); ++ip)
+    {
+      const double dx = pts[ip].first  - xc_global;
+      const double dy = pts[ip].second - yc_global;
+      const double r_to_center = std::sqrt(dx*dx + dy*dy);
+
+      if (std::fabs(r_to_center - R_global) < 0.25 * R_global)
       {
-        pickx = P2.first; picky = P2.second;
+        use_pts.push_back(pts[ip]);  // keep points reasonably close to global circle
       }
     }
 
-    // --- Fill "fit-truth" info ---
-    const double rFit = std::hypot(pickx, picky);
-    const double phiFit = std::atan2(picky, pickx);
+    if (use_pts.size() < 3)
+    {
+      // filter was too strict → fall back to all points in region
+      use_pts = pts;
+    }
 
-    m_truth_cluster_x    = float(pickx);
-    m_truth_cluster_y    = float(picky);
-    m_truth_cluster_z    = float(g.z());          // keep z same as cluster
-    m_truth_cluster_r    = float(rFit);
-    m_truth_cluster_phi  = float(phiFit);
-    m_truth_cluster_time = m_cluster_time;
+    double xc_fit = xc_global;
+    double yc_fit = yc_global;
+    double R_fit  = R_global;
 
-    // --- Residuals ---
-  //  m_cluster_residual_rphi  = float(rReco * std::remainder(phiReco - phiFit, 2.0*M_PI));
-    //m_cluster_residual_time  = std::numeric_limits<float>::quiet_NaN();
-    residual_rphi_map[ckey] = float(rReco * std::remainder(phiReco - phiFit, 2.0*M_PI));
-    residual_time_map[ckey] = std::numeric_limits<float>::quiet_NaN();
+    // robust Taubin fit on this region
+    if (!fitCircleTaubinXY(use_pts, xc_fit, yc_fit, R_fit))
+    {
+      // if fit fails, use global
+      xc_reg[ireg] = xc_global;
+      yc_reg[ireg] = yc_global;
+      R_reg[ireg]  = R_global;
+      continue;
+    }
+
+    // if radius is wildly inconsistent with global, clamp back to global
+    if (std::fabs(R_fit - R_global) / std::max(R_global, 1e-6) > max_rel_R_deviation)
+    {
+      xc_reg[ireg] = xc_global;
+      yc_reg[ireg] = yc_global;
+      R_reg[ireg]  = R_global;
+    }
+    else
+    {
+      xc_reg[ireg] = xc_fit;
+      yc_reg[ireg] = yc_fit;
+      R_reg[ireg]  = R_fit;
+    }
+  }
+
+  // --- Step 3: for each cluster, compute intersection of its region circle with layer radius ---
+  for (int ireg = 0; ireg < 3; ++ireg)
+  {
+    const std::vector<TrkrDefs::cluskey>& keys = regions[ireg].keys;
+    if (keys.empty()) continue;
+
+    for (size_t ik = 0; ik < keys.size(); ++ik)
+    {
+      const TrkrDefs::cluskey ckey = keys[ik];
+      const unsigned int layer = TrkrDefs::getLayer(ckey);
+
+      PHG4TpcGeom* geoLayer = tpcGeom->GetLayerCellGeom(layer);
+      if (!geoLayer) continue;
+
+      const double rLayer = geoLayer->get_radius();  // cylinder radius for this layer
+
+      TrkrCluster* c = clustermap->findCluster(ckey);
+      if (!c) continue;
+
+      const Acts::Vector3 g = geometry->getGlobalPosition(ckey, c);
+      const double xm = g.x();
+      const double ym = g.y();
+      const double zm = g.z();
+
+      const double rReco = std::sqrt(xm*xm + ym*ym);
+
+      // Intersection between fitted circle in this region and circle around beamline with radius rLayer
+      std::pair<double,double> P1, P2;
+      bool twoSol = false;
+      if (!intersectTwoCircles(
+             xc_reg[ireg], yc_reg[ireg], R_reg[ireg],
+             rLayer,
+             P1, P2, twoSol))
+      {
+        // no intersection → skip this cluster
+        continue;
+      }
+
+      // choose solution closer in XY to measured cluster position
+      const double d1 = std::sqrt( (P1.first - xm)*(P1.first - xm)
+                                 + (P1.second - ym)*(P1.second - ym) );
+      double d2 = std::numeric_limits<double>::infinity();
+      if (twoSol)
+      {
+        d2 = std::sqrt( (P2.first - xm)*(P2.first - xm)
+                      + (P2.second - ym)*(P2.second - ym) );
+      }
+
+      const double xfit = (d1 <= d2) ? P1.first  : P2.first;
+      const double yfit = (d1 <= d2) ? P1.second : P2.second;
+
+      const double phiReco = std::atan2(ym, xm);
+      const double phiFit  = std::atan2(yfit, xfit);
+      const double dphi    = std::remainder(phiReco - phiFit, 2.0 * M_PI);
+
+      // store "fit truth" position in maps (z: keep measured for now)
+      m_truth_cluster_x_map[ckey] = static_cast<float>(xfit);
+      m_truth_cluster_y_map[ckey] = static_cast<float>(yfit);
+      m_truth_cluster_z_map[ckey] = static_cast<float>(zm);
+
+      std::cout<<"ClusterPhaseAnalysis::ComputeFitTruthAtLayer -- ckey "<<ckey
+               <<" layer "<<layer
+               <<" rLayer "<<rLayer
+               <<" reco (x,y)=("<<xm<<","<<ym<<") rReco "<<rReco
+               <<" fit (x,y)=("<<xfit<<","<<yfit<<")"
+               <<" dphi "<<dphi
+               <<std::endl;
+      // residuals
+      residual_rphi_map[ckey] = static_cast<float>(rReco * dphi);
+      // time residual: we don't touch here, leave for other calibration
+      residual_time_map[ckey] = std::numeric_limits<float>::quiet_NaN();
+    }
   }
 }
+
+
 
 //_____________________________________________________________________________________________
 
