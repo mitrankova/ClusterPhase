@@ -308,6 +308,13 @@ int ClusterPhaseAnalysis::Init(PHCompositeNode* /*topNode*/)
   // Event-level branches
   m_tree->Branch("event", &m_event, "event/I");
   m_tree->Branch("vdrift", &m_vdrift, "vdrift/F");
+  m_tree->Branch("ntpc", &m_ntpc, "n_ntpc/I");
+  m_tree->Branch("quality", &m_quality, "n_quality/I");
+  m_tree->Branch("pt", &m_pt, "pt/F");
+  m_tree->Branch("phi0", &m_phi0, "phi0/F");
+  m_tree->Branch("eta0", &m_eta0, "eta0/F");
+
+
 
   // Cluster-level branches
   m_tree->Branch("cluster_x", &m_cluster_x, "m_cluster_x/F");
@@ -439,15 +446,22 @@ bool ClusterPhaseAnalysis::checkTrack(SvtxTrack* track)
         ifGoodTrack = false;
         return false;
     }
+    if (m_ifzerofield == false)
+    {
+        m_pt = track->get_pt();
+        m_phi0 = track->get_phi();
+        m_eta0 = track->get_eta();
+    }
 
     if (m_ifzerofield == false && (track->get_quality() > m_maxQuality))
     {
+        m_quality = track->get_quality();
         std::cout<<" Track quality is higher then "<<m_maxQuality<<std::endl;
         ifGoodTrack = false;
         return false;
     }
 
-    int m_ntpc=0;
+     m_ntpc=0;
     for (const auto& ckey : get_cluster_keys(track))
     {
         const auto detId = TrkrDefs::getTrkrId(ckey);
@@ -468,7 +482,7 @@ bool ClusterPhaseAnalysis::checkTrack(SvtxTrack* track)
 
     if (ifGoodTrack && Verbosity() > 2)
     {
-        std::cout << "ClusterPhaseAnalysis::checkTrack - pt: " << track->get_pt() <<" ntpc: "<<m_ntpc<<" qualiuty: "<<track->get_quality()<<" If zero field: "<<m_ifzerofield<< std::endl;
+        std::cout << "ClusterPhaseAnalysis::checkTrack - pt: " << track->get_pt() <<" ntpc: "<<m_ntpc<<" qualiuty: "<<m_quality<<" If zero field: "<<m_ifzerofield<< std::endl;
     }
 
     return true;
@@ -911,6 +925,7 @@ void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
     use_pts.reserve(pts.size());
     for (size_t ip = 0; ip < pts.size(); ++ip)
     {
+      /*
       const double dx = pts[ip].first  - xc_global;
       const double dy = pts[ip].second - yc_global;
       const double r_to_center = std::sqrt(dx*dx + dy*dy);
@@ -919,6 +934,10 @@ void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
       {
         use_pts.push_back(pts[ip]);  // keep points reasonably close to global circle
       }
+      */
+      use_pts.push_back(pts[ip]);
+      std::cout<<"ClusterPhaseAnalysis::ComputeFitTruthAtLayer -- Region "<<ireg
+               <<" using point x = "<<pts[ip].first<<" y = "<<pts[ip].second<<std::endl;
     }
 
     if (use_pts.size() < 3)
@@ -932,28 +951,43 @@ void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
     double R_fit  = R_global;
 
     // robust Taubin fit on this region
+    std::cout<<"ClusterPhaseAnalysis::ComputeFitTruthAtLayer -- Region "<<ireg
+             <<" fitting "<<use_pts.size()<<" points. Global Fit xc = "<<xc_global<<" yc = "<<yc_global<<" R = "<<R_global<<std::endl;
+
     if (!fitCircleTaubinXY(use_pts, xc_fit, yc_fit, R_fit))
     {
       // if fit fails, use global
       xc_reg[ireg] = xc_global;
       yc_reg[ireg] = yc_global;
       R_reg[ireg]  = R_global;
+      std::cout<<"ClusterPhaseAnalysis::ComputeFitTruthAtLayer -- Region "<<ireg
+               <<" fit failed, using global circle for this region."<<std::endl;
       continue;
     }
+
+      std::cout<<"ClusterPhaseAnalysis::ComputeFitTruthAtLayer -- Region "<<ireg
+               <<" fitted weighted: xc = "<<xc_fit<<" yc = "<<yc_fit<<" R = "<<R_fit<<std::endl;
+
 
     // if radius is wildly inconsistent with global, clamp back to global
     if (std::fabs(R_fit - R_global) / std::max(R_global, 1e-6) > max_rel_R_deviation)
     {
+      std::cout<<"ClusterPhaseAnalysis::ComputeFitTruthAtLayer -- Region "<<ireg
+               <<" fitted R = "<<R_fit<<" deviates too much from global R = "<<R_global
+               <<", using global circle for this region."<<std::endl;
       xc_reg[ireg] = xc_global;
       yc_reg[ireg] = yc_global;
       R_reg[ireg]  = R_global;
     }
     else
     {
+
       xc_reg[ireg] = xc_fit;
       yc_reg[ireg] = yc_fit;
       R_reg[ireg]  = R_fit;
     }
+          std::cout<<"ClusterPhaseAnalysis::ComputeFitTruthAtLayer -- Region "<<ireg
+               <<" Final taken fit: xc = "<<xc_reg[ireg]<<" yc = "<<yc_reg[ireg]<<" R = "<<R_reg[ireg]<<std::endl;
   }
 
   // --- Step 3: for each cluster, compute intersection of its region circle with layer radius ---

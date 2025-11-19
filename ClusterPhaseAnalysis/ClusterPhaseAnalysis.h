@@ -82,6 +82,12 @@ class ClusterPhaseAnalysis : public SubsysReco
 
 
   float m_vdrift = std::numeric_limits<float>::quiet_NaN();
+  int m_ntpc = std::numeric_limits<int>::quiet_NaN();
+  int m_quality = std::numeric_limits<int>::quiet_NaN();
+  float m_pt = std::numeric_limits<float>::quiet_NaN();
+  float m_phi0 = std::numeric_limits<float>::quiet_NaN();
+  float m_eta0 = std::numeric_limits<float>::quiet_NaN();
+  
 
   // Cluster-level variables
   float m_cluster_x = std::numeric_limits<float>::quiet_NaN();
