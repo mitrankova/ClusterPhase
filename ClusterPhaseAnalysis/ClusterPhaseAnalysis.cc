@@ -130,92 +130,316 @@ TrackCircleGuess initialCircleFromTrack(const SvtxTrack* track, double Bz_T)
   out.yc = y0 + s * Rphys * std::sin(phi0 + s * M_PI_2);
   out.R  = Rphys;
 
-  std::cout<<" initialCircleFromTrack: xc "<<out.xc<<" yc "<<out.yc<<" R "<<out.R<<std::endl;
+ // std::cout<<" initialCircleFromTrack: xc "<<out.xc<<" yc "<<out.yc<<" R "<<out.R<<std::endl;
 
   return out;
 }
+// -------------------------------------------------------------
+// Solve 3x3 system A x = b (simple Gaussian elimination)
+// -------------------------------------------------------------
+bool solve3x3(const double A[3][3], const double b[3], double x[3])
+{
+  // Copy so we can modify
+  double M[3][3];
+  double rhs[3];
+  for (int i = 0; i < 3; ++i)
+  {
+    rhs[i] = b[i];
+    for (int j = 0; j < 3; ++j) M[i][j] = A[i][j];
+  }
 
+  // Forward elimination
+  for (int k = 0; k < 3; ++k)
+  {
+    // Find pivot
+    int piv = k;
+    double maxAbs = std::fabs(M[k][k]);
+    for (int i = k + 1; i < 3; ++i)
+    {
+      double val = std::fabs(M[i][k]);
+      if (val > maxAbs)
+      {
+        maxAbs = val;
+        piv = i;
+      }
+    }
 
-bool fitCircleTaubinXY(const std::vector<std::pair<double,double>>& pts,
-                       double& xc, double& yc, double& R)
+    if (maxAbs < 1e-20) return false;
+
+    // Swap rows if needed
+    if (piv != k)
+    {
+      for (int j = 0; j < 3; ++j) std::swap(M[k][j], M[piv][j]);
+      std::swap(rhs[k], rhs[piv]);
+    }
+
+    // Eliminate below
+    const double diag = M[k][k];
+    for (int i = k + 1; i < 3; ++i)
+    {
+      const double f = M[i][k] / diag;
+      rhs[i] -= f * rhs[k];
+      for (int j = k; j < 3; ++j) M[i][j] -= f * M[k][j];
+    }
+  }
+
+  // Back substitution
+  for (int i = 2; i >= 0; --i)
+  {
+    double sum = rhs[i];
+    for (int j = i + 1; j < 3; ++j) sum -= M[i][j] * x[j];
+    if (std::fabs(M[i][i]) < 1e-20) return false;
+    x[i] = sum / M[i][i];
+  }
+  return true;
+}
+
+// Sagitta model in C++: same as Python sagitta_model
+static void sagittaModelCpp(
+    double S, double x0, double invR,
+    const std::vector<double>& up,
+    std::vector<double>& f_out)
+{
+  const size_t n = up.size();
+  f_out.resize(n);
+
+  for (size_t i = 0; i < n; ++i)
+  {
+    const double dx  = up[i] - x0;
+    const double dx2 = dx*dx;
+    const double dx4 = dx2*dx2;
+    const double dx6 = dx4*dx2;
+
+    const double invR3 = invR*invR*invR;
+    const double invR5 = invR3*invR*invR;
+
+    f_out[i] =
+      S
+      - 0.5   * invR  * dx2
+      - 0.125 * invR3 * dx4
+      - 0.0625* invR5 * dx6;
+  }
+}
+
+bool fitCircleSagittaXY(
+  const std::vector<std::pair<double,double>>& pts,
+  double& xc_out, double& yc_out, double& R_out)
 {
   const size_t n = pts.size();
   if (n < 3) return false;
 
-  auto runWeighted = [](const std::vector<std::pair<double,double>>& p,
-                        const std::vector<double>& w,
-                        double& xc_out, double& yc_out, double& R_out) -> bool
+  // ------------------------------------------------------------
+  // 1) Straight line fit y = m x + b  (same as rotate_points_to_x_axis)
+  // ------------------------------------------------------------
+  double Sx = 0., Sy = 0., Sxx = 0., Sxy = 0.;
+  for (size_t i = 0; i < n; ++i)
   {
-    double sumw = 0., meanx = 0., meany = 0.;
-    for (size_t i=0;i<p.size();++i){
-      sumw += w[i];
-      meanx += p[i].first  * w[i];
-      meany += p[i].second * w[i];
-    }
-    meanx /= sumw;  meany /= sumw;
-
-    double Suu=0.,Svv=0.,Suv=0.,Suuu=0.,Svvv=0.,Suvv=0.,Svuu=0.;
-    for (size_t i=0;i<p.size();++i){
-      const double wi = w[i];
-      const double u = p[i].first  - meanx;
-      const double v = p[i].second - meany;
-      Suu  += wi*u*u;
-      Svv  += wi*v*v;
-      Suv  += wi*u*v;
-      Suuu += wi*u*u*u;
-      Svvv += wi*v*v*v;
-      Suvv += wi*u*v*v;
-      Svuu += wi*v*u*u;
-    }
-
-    const double A = Suu;
-    const double B = Suv;
-    const double C = Svv;
-    const double D = 0.5*(Suuu + Suvv);
-    const double E = 0.5*(Svvv + Svuu);
-
-    const double det = A*C - B*B;
-    if (std::fabs(det) < 1e-14*(A*A + C*C)) return false;
-
-    const double uc = (D*C - B*E) / det;
-    const double vc = (A*E - B*D) / det;
-
-    xc_out = meanx + uc;
-    yc_out = meany + vc;
-
-    double r2 = 0.;
-    for (size_t i=0;i<p.size();++i){
-      const double dx = p[i].first  - xc_out;
-      const double dy = p[i].second - yc_out;
-      r2 += w[i]*(dx*dx + dy*dy);
-    }
-    r2 /= sumw;
-    R_out = std::sqrt(std::max(r2,0.0));
-    return std::isfinite(R_out) && R_out>1e-6;
-  };
-
-  // --- initial unweighted ---
-  std::vector<double> w(n,1.0);
-  if(!runWeighted(pts,w,xc,yc,R)) return false;
-
-  // --- iterative robust weighting ---
-  const double huberK = 1.5; // cm cutoff
-  for(int iter=0; iter<3; ++iter)
-  {
-    std::vector<double> res(n);
-    for(size_t i=0;i<n;++i)
-      res[i] = std::fabs(std::hypot(pts[i].first - xc, pts[i].second - yc) - R);
-
-    for(size_t i=0;i<n;++i){
-      double r = res[i];
-      w[i] = (r<=huberK) ? 1.0 : huberK / r;
-    }
-
-    if(!runWeighted(pts,w,xc,yc,R)) break;
+    const double x = pts[i].first;
+    const double y = pts[i].second;
+    Sx  += x;
+    Sy  += y;
+    Sxx += x*x;
+    Sxy += x*y;
   }
 
-  return true;
+  const double denom = n*Sxx - Sx*Sx;
+  double m = 0., b = 0.;
+  if (std::fabs(denom) > 1e-20)
+  {
+    m = (n*Sxy - Sx*Sy) / denom;
+    b = (Sy - m*Sx) / n;
+  }
+  else
+  {
+    m = 0.;
+    b = (n > 0) ? (Sy / n) : 0.;
+  }
+
+  const double theta = std::atan(m);
+  const double cth   = std::cos(theta);
+  const double sth   = std::sin(theta);
+  //std::cout<<" m = "<<m<<" theta = "<<theta<<" b = "<<b<<std::endl;
+
+  // ------------------------------------------------------------
+  // 2) Rotate to (x', y') where chord is horizontal
+  // ------------------------------------------------------------
+  std::vector<double> up(n), vp(n);
+  for (size_t i = 0; i < n; ++i)
+  {
+    const double x = pts[i].first;
+    const double y = pts[i].second;
+
+    const double x_shift = x;
+    const double y_shift = y - b; // line passes through origin
+
+    // xr = cos θ * x + sin θ * (y-b)
+    // yr = -sin θ * x + cos θ * (y-b)
+    up[i] =  cth * x_shift + sth * y_shift;
+    vp[i] = -sth * x_shift + cth * y_shift;
+   // std::cout<<"  Horizonal line x = "<<up[i]<<" y = "<<vp[i]<<std::endl;
+  }
+
+  // ------------------------------------------------------------
+  // 3) Initial guesses for S, x0, invR  (same as Python)
+  // ------------------------------------------------------------
+  double S0   = vp[0];
+  double x0_0 = up[0];
+  for (size_t i = 1; i < n; ++i)
+  {
+    if (vp[i] > S0)
+    {
+      S0   = vp[i];
+      x0_0 = up[i];
+    }
+  }
+
+  double S    = S0;          // sagitta height
+  double x0   = x0_0;        // apex position in x'
+  double invR = 1.0 / 100.0; // R ~ 100 cm
+ // std::cout<<"Prelim Params 0 : S0  "<<S<<" x0 "<<x0<<" inv R "<<invR<<std::endl;
+// ------------------------------------------------------------
+// 4) Gauss–Newton with NUMERICAL Jacobian (like SciPy)
+// ------------------------------------------------------------
+const int    maxIter   = 50;
+const double tolDelta  = 1e-8;
+const double eps_param = 1e-6;
+
+std::vector<double> f(n), r(n);
+//std::cout << "Prelim Params 0 : S0 " << S << " x0 " << x0 << " invR " << invR << std::endl;
+
+//int it_used = 0;
+int nfev = 0;
+
+for (int iter = 0; iter < maxIter; ++iter)
+{
+ // it_used = iter + 1;
+
+  // baseline model and residuals
+  sagittaModelCpp(S, x0, invR, up, f);
+  nfev += 1;
+
+  double cost = 0.0;
+  for (size_t i = 0; i < n; ++i)
+  {
+    r[i] = f[i] - vp[i];
+    cost += 0.5 * r[i] * r[i];
+  }
+
+  // optional: print per-iteration status
+  // std::cout << "Iter " << iter << " cost = " << cost
+  //           << "  S=" << S << " x0=" << x0 << " invR=" << invR << std::endl;
+
+  double JTJ[3][3] = { {0.,0.,0.}, {0.,0.,0.}, {0.,0.,0.} };
+  double JTr[3]    = { 0., 0., 0. };
+
+  // --- compute perturbed models once per parameter ---
+  std::vector<double> fS_plus(n), fS_minus(n);
+  std::vector<double> fx0_plus(n), fx0_minus(n);
+  std::vector<double> fR_plus(n), fR_minus(n);
+
+  sagittaModelCpp(S + eps_param, x0, invR, up, fS_plus);
+  sagittaModelCpp(S - eps_param, x0, invR, up, fS_minus);
+  sagittaModelCpp(S, x0 + eps_param, invR, up, fx0_plus);
+  sagittaModelCpp(S, x0 - eps_param, invR, up, fx0_minus);
+  sagittaModelCpp(S, x0, invR + eps_param, up, fR_plus);
+  sagittaModelCpp(S, x0, invR - eps_param, up, fR_minus);
+  nfev += 6; // we did 6 extra evaluations
+
+  for (size_t i = 0; i < n; ++i)
+  {
+    const double dfdS    = (fS_plus[i]  - fS_minus[i])  / (2.0 * eps_param);
+    const double dfdx0   = (fx0_plus[i] - fx0_minus[i]) / (2.0 * eps_param);
+    const double dfdinvR = (fR_plus[i]  - fR_minus[i])  / (2.0 * eps_param);
+
+    const double J[3] = { dfdS, dfdx0, dfdinvR };
+    const double ri   = r[i];
+
+    for (int a = 0; a < 3; ++a)
+    {
+      JTr[a] += J[a] * ri;
+      for (int j = 0; j < 3; ++j)
+        JTJ[a][j] += J[a] * J[j];
+    }
+  }
+
+  // Solve (J^T J) Δ = - J^T r
+  for (int a = 0; a < 3; ++a) JTr[a] = -JTr[a];
+
+  double delta[3] = {0.,0.,0.};
+  if (!solve3x3(JTJ, JTr, delta)) break;
+
+  const double alpha = 1.0; // SciPy uses line search, we keep full step
+  S    += alpha * delta[0];
+  x0   += alpha * delta[1];
+  invR += alpha * delta[2];
+
+  if (!std::isfinite(S) || !std::isfinite(x0) || !std::isfinite(invR))
+    break;
+
+  if (invR == 0.) invR = 1.0 / 100.0;
+
+  const double maxDelta =
+    std::max(std::fabs(delta[0]),
+    std::max(std::fabs(delta[1]), std::fabs(delta[2])));
+
+  if (maxDelta < tolDelta) break;
 }
+
+// after the loop:
+const double R = (invR != 0.0) ? (1.0 / invR) : 1e9;
+if (!std::isfinite(R) || R == 0.) return false;
+
+// final debug print (Python-style)
+double final_cost = 0.0;
+sagittaModelCpp(S, x0, invR, up, f);
+for (size_t i = 0; i < n; ++i)
+{
+  const double ri = f[i] - vp[i];
+  final_cost += 0.5 * ri * ri;
+}
+/*
+std::cout << "---------------- SAGITTA FIT RESULT ----------------\n"
+          << "S       = " << S    << "\n"
+          << "x0      = " << x0   << "\n"
+          << "invR    = " << invR << "\n"
+          << "R       = " << R    << "\n"
+          << "Final cost (0.5 * sum r^2) = " << final_cost << "\n"
+          << "Iterations = " << it_used << "\n"
+          << "Function evaluations (approx) = " << nfev << "\n"
+          << "----------------------------------------------------\n";
+
+*/
+
+
+      // signed radius
+     // R = (invR != 0.0) ? (1.0 / invR) : 1e9;
+      if (!std::isfinite(R)) return false;
+
+      // geometry uses |R|
+      const double Rmag = std::fabs(R);
+
+      // 5) Back to (x,y): center in rotated frame, allow signed R
+      const double Xc_prime = x0;
+      const double Yc_prime = S - R;     // signed curvature
+
+      const double xc_shift =  cth * Xc_prime - sth * Yc_prime;
+      const double yc_shift =  sth * Xc_prime + cth * Yc_prime;
+
+      const double xc = xc_shift;
+      const double yc = yc_shift + b;
+
+      if (!std::isfinite(xc) || !std::isfinite(yc))
+          return false;
+
+      xc_out = xc;
+      yc_out = yc;
+      R_out  = Rmag;     // return positive geometric radius
+      return true;
+
+}
+
+
+
 
 
   // Intersect fitted circle (xc,yc,R) with origin-centered circle of radius rLayer.
@@ -344,6 +568,16 @@ int ClusterPhaseAnalysis::Init(PHCompositeNode* /*topNode*/)
   m_tree->Branch("cluster_residual_rphi", &m_cluster_residual_rphi, "m_cluster_residual_rphi/F");
   m_tree->Branch("cluster_residual_time", &m_cluster_residual_time, "m_cluster_residual_time/F");
 
+  // Simulation Truth cluster branches
+  m_tree->Branch("sim_truth_cluster_x", &m_sim_truth_cluster_x,"m_sim_truth_cluster_x/F");
+  m_tree->Branch("sim_truth_cluster_y", &m_sim_truth_cluster_y, "m_sim_truth_cluster_y/F");
+  m_tree->Branch("sim_truth_cluster_z", &m_sim_truth_cluster_z, "m_sim_truth_cluster_z/F");
+  m_tree->Branch("sim_truth_cluster_r", &m_sim_truth_cluster_r, "m_sim_truth_cluster_r/F");
+  m_tree->Branch("sim_truth_cluster_phi", &m_sim_truth_cluster_phi, "m_sim_truth_cluster_phi/F");
+  m_tree->Branch("sim_truth_cluster_time", &m_sim_truth_cluster_time, "m_sim_truth_cluster_time/F"); 
+  m_tree->Branch("sim_cluster_residual_rphi", &m_sim_cluster_residual_rphi, "m_sim_cluster_residual_rphi/F");
+  m_tree->Branch("sim_cluster_residual_time", &m_sim_cluster_residual_time, "m_sim_cluster_residual_time/F");
+
 
   // Hit-level branches (nested vectors)
   m_tree->Branch("hit_keys", &m_hitkeys);
@@ -425,7 +659,8 @@ void ClusterPhaseAnalysis::processTracks()
         
         if (checkTrack(track))
         {
-            if(!isSimulation) ComputeFitTruthAtLayer( track);
+           // if(!isSimulation) 
+            ComputeFitTruthAtLayer( track);
             FillClusters(track);
             
 
@@ -553,7 +788,8 @@ void ClusterPhaseAnalysis::FillClusters(SvtxTrack* track)
       m_truth_cluster_x = m_truth_cluster_x_map.count(cluskey) ? m_truth_cluster_x_map[cluskey] : NAN;
       m_truth_cluster_y = m_truth_cluster_y_map.count(cluskey) ? m_truth_cluster_y_map[cluskey] : NAN;
       m_truth_cluster_z = m_truth_cluster_z_map.count(cluskey) ? m_truth_cluster_z_map[cluskey] : NAN;
-
+std::cout<<"  !!!!!! cluster "<<cluskey<<" m_cluster_x "<<m_cluster_x<<" m_cluster_y "<<m_cluster_y<<" m_cluster_z "<<m_cluster_z<<std::endl;
+std::cout<<"  !!!!!! cluster "<<cluskey<<" m_truth_cluster_x "<<m_truth_cluster_x<<" m_truth_cluster_y "<<m_truth_cluster_y<<" m_truth_cluster_z "<<m_truth_cluster_z<<"   -- m_cluster_residual_rphi "<<m_cluster_residual_rphi<<std::endl;
       std::cout<<"FILL TREE"<<std::endl;
       m_tree->Fill();
   }
@@ -604,14 +840,14 @@ void ClusterPhaseAnalysis::FindTruthClusters(uint64_t key, Acts::Vector3 glob)
 
     if (best)
     {
-      m_truth_cluster_x = static_cast<float>(best_glob.x());
-      m_truth_cluster_y = static_cast<float>(best_glob.y());
-      m_truth_cluster_z = static_cast<float>(best_glob.z());
-      m_truth_cluster_time = best->getLocalY();
-      m_truth_cluster_r = std::sqrt(square(m_truth_cluster_x) + square(m_truth_cluster_y));
-      m_truth_cluster_phi = std::atan2(m_truth_cluster_y, m_truth_cluster_x);
-      m_cluster_residual_rphi = r_reco * std::remainder(phi_reco - m_truth_cluster_phi, 2.f * static_cast<float>(M_PI));
-      m_cluster_residual_time = m_cluster_time - m_truth_cluster_time;
+      m_sim_truth_cluster_x = static_cast<float>(best_glob.x());
+      m_sim_truth_cluster_y = static_cast<float>(best_glob.y());
+      m_sim_truth_cluster_z = static_cast<float>(best_glob.z());
+      m_sim_truth_cluster_time = best->getLocalY();
+      m_sim_truth_cluster_r = std::sqrt(square(m_sim_truth_cluster_x) + square(m_sim_truth_cluster_y));
+      m_sim_truth_cluster_phi = std::atan2(m_sim_truth_cluster_y, m_sim_truth_cluster_x);
+      m_sim_cluster_residual_rphi = r_reco * std::remainder(phi_reco - m_sim_truth_cluster_phi, 2.f * static_cast<float>(M_PI));
+      m_sim_cluster_residual_time = m_cluster_time - m_sim_truth_cluster_time;
 
       //std::cout<<"FILL TREE: truth cluster "<<std::endl;
      // m_tree->Fill();
@@ -773,13 +1009,13 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
   {
     sum_by_tbin[m_hit_time[i]] += static_cast<double>(m_hit_adc[i]);
     sum_by_pad[m_hit_phi[i]] += static_cast<double>(m_hit_adc[i]);
-    std::cout<<"   hit phi "<<m_hit_phi[i]<<" time "<<m_hit_time[i]<<" adc "<<m_hit_adc[i]<<std::endl;
+  // std::cout<<"   hit phi "<<m_hit_phi[i]<<" time "<<m_hit_time[i]<<" adc "<<m_hit_adc[i]<<std::endl;
   }
 
 
   for (const auto& entry : sum_by_pad) 
   {
-    std::cout<<"   phi "<<entry.first<<" adc sum "<<entry.second<<std::endl;
+   // std::cout<<"   phi "<<entry.first<<" adc sum "<<entry.second<<std::endl;
     if (entry.second > max_adc_sum_by_pad) 
     {
         max_adc_sum_by_pad = entry.second;
@@ -794,7 +1030,7 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
 
   for (const auto& entry : sum_by_tbin) 
   {
-    std::cout<<"   time "<<entry.first<<" adc sum "<<entry.second<<std::endl;
+   // std::cout<<"   time "<<entry.first<<" adc sum "<<entry.second<<std::endl;
     if (entry.second > max_adc_sum_by_tbin) 
     {
         max_adc_sum_by_tbin = entry.second;
@@ -891,7 +1127,7 @@ void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
     double yc_tmp = yc_global;
     double R_tmp  = R_global;
 
-    if (fitCircleTaubinXY(allPts, xc_tmp, yc_tmp, R_tmp))
+    if (fitCircleSagittaXY(allPts, xc_tmp, yc_tmp, R_tmp))
     {
       xc_global = xc_tmp;
       yc_global = yc_tmp;
@@ -905,7 +1141,7 @@ void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
   double yc_reg[3] = { yc_global, yc_global, yc_global };
   double R_reg[3]  = { R_global , R_global , R_global  };
 
-  const double max_rel_R_deviation = 0.30; // 30% deviation from global R allowed
+  //const double max_rel_R_deviation = 0.30; // 30% deviation from global R allowed
 
   for (int ireg = 0; ireg < 3; ++ireg)
   {
@@ -950,27 +1186,26 @@ void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
     double yc_fit = yc_global;
     double R_fit  = R_global;
 
-    // robust Taubin fit on this region
+    
     std::cout<<"ClusterPhaseAnalysis::ComputeFitTruthAtLayer -- Region "<<ireg
              <<" fitting "<<use_pts.size()<<" points. Global Fit xc = "<<xc_global<<" yc = "<<yc_global<<" R = "<<R_global<<std::endl;
 
-    if (!fitCircleTaubinXY(use_pts, xc_fit, yc_fit, R_fit))
+    if (!fitCircleSagittaXY(use_pts, xc_fit, yc_fit, R_fit))
     {
       // if fit fails, use global
       xc_reg[ireg] = xc_global;
       yc_reg[ireg] = yc_global;
       R_reg[ireg]  = R_global;
       std::cout<<"ClusterPhaseAnalysis::ComputeFitTruthAtLayer -- Region "<<ireg
-               <<" fit failed, using global circle for this region."<<std::endl;
+               <<" sagitta fit failed, using global circle for this region."<<std::endl;
       continue;
     }
-
       std::cout<<"ClusterPhaseAnalysis::ComputeFitTruthAtLayer -- Region "<<ireg
                <<" fitted weighted: xc = "<<xc_fit<<" yc = "<<yc_fit<<" R = "<<R_fit<<std::endl;
 
 
     // if radius is wildly inconsistent with global, clamp back to global
-    if (std::fabs(R_fit - R_global) / std::max(R_global, 1e-6) > max_rel_R_deviation)
+   /* if (std::fabs(R_fit - R_global) / std::max(R_global, 1e-6) > max_rel_R_deviation)
     {
       std::cout<<"ClusterPhaseAnalysis::ComputeFitTruthAtLayer -- Region "<<ireg
                <<" fitted R = "<<R_fit<<" deviates too much from global R = "<<R_global
@@ -978,8 +1213,8 @@ void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
       xc_reg[ireg] = xc_global;
       yc_reg[ireg] = yc_global;
       R_reg[ireg]  = R_global;
-    }
-    else
+    }*/
+   // else
     {
 
       xc_reg[ireg] = xc_fit;
@@ -1021,7 +1256,7 @@ void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
       bool twoSol = false;
       if (!intersectTwoCircles(
              xc_reg[ireg], yc_reg[ireg], R_reg[ireg],
-             rLayer,
+             rReco,
              P1, P2, twoSol))
       {
         // no intersection → skip this cluster

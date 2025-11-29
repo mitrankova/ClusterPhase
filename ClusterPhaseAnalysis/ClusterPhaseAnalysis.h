@@ -120,6 +120,16 @@ class ClusterPhaseAnalysis : public SubsysReco
 
   float m_cluster_residual_rphi = std::numeric_limits<float>::quiet_NaN();
   float m_cluster_residual_time = std::numeric_limits<float>::quiet_NaN();
+    // Truth cluster information
+  float m_sim_truth_cluster_x = std::numeric_limits<float>::quiet_NaN();
+  float m_sim_truth_cluster_y = std::numeric_limits<float>::quiet_NaN();
+  float m_sim_truth_cluster_z = std::numeric_limits<float>::quiet_NaN();
+  float m_sim_truth_cluster_r = std::numeric_limits<float>::quiet_NaN();
+  float m_sim_truth_cluster_phi = std::numeric_limits<float>::quiet_NaN();
+  float m_sim_truth_cluster_time = std::numeric_limits<float>::quiet_NaN();
+
+  float m_sim_cluster_residual_rphi = std::numeric_limits<float>::quiet_NaN();
+  float m_sim_cluster_residual_time = std::numeric_limits<float>::quiet_NaN();
   std::map<TrkrDefs::cluskey, float> residual_rphi_map;
   std::map<TrkrDefs::cluskey, float> residual_time_map;
     std::map<TrkrDefs::cluskey, float> m_truth_cluster_x_map;
