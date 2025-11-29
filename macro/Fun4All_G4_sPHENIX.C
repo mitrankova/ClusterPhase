@@ -56,29 +56,30 @@ R__LOAD_LIBRARY(/sphenix/user/mitrankova/ClusterPhase/ClusterPhaseAnalysis/insta
 
 
 int Fun4All_G4_sPHENIX(
-    const int nEvents = 10,
-    const string &outputFile = "G4sPHENIX",
-    const int skip = 0
+    const int nEvents = 2,
+    const int processId = 0,
+    const std::string outdir  = "/sphenix/user/mitrankova/ClusterPhase/",
+    const string &outputFile = "Pi_G4sPHENIX_"
     )
 {
 
-  std::string outdir  = "/sphenix/user/mitrankova/ClusterPhase/";
-  TString outfile = outdir + "output/"+ outputFile + to_string(nEvents) + "evts";
+    const int skip = 0;
+ // std::string outdir  = "/sphenix/tg/tg01/hf/mitrankova/ZigZagSimulation/NoZigZag/";
+  TString outfile = outdir + "output/"+ outputFile + to_string(nEvents) + "evts_" + to_string(processId);
   std::string theOutfile = outfile.Data();
-  TString outfile_resid = outdir + "output_resid/"+ outputFile + to_string(nEvents) + "evts";
+  TString outfile_resid = outdir + "output_resid/"+ outputFile + to_string(nEvents) + "evts_" + to_string(processId);
   std::string theOutfile_resid = outfile_resid.Data();
-  TString outfile_phase = outdir + "output_phase/"+ outputFile + to_string(nEvents) + "evts";
+  TString outfile_phase = outdir + "output_phase/"+ outputFile + to_string(nEvents) + "evts_" + to_string(processId);
   std::string theOutfile_phase = outfile_phase.Data();
 
 
   Fun4AllServer *se = Fun4AllServer::instance();
-  se->Verbosity(0);
+  se->Verbosity(2);
 
 
   PHRandomSeed::Verbosity(1);
 
   recoConsts *rc = recoConsts::instance();
-\
 
 
   //===============
@@ -88,24 +89,41 @@ int Fun4All_G4_sPHENIX(
   Input::VERBOSITY = 0;
 
 
-  Input::SIMPLE = true;
- 
+   Input::SIMPLE = true;
+
+   Input::UPSILON = false;
+   Input::UPSILON_NUMBER = 1; // if you need 3 of them
+   Input::UPSILON_VERBOSITY = 0;
 
   InputInit();
 
+    if (Input::SIMPLE)
+    {
+      INPUTGENERATOR::SimpleEventGenerator[0]->add_particles("pi-", 1);
 
-    INPUTGENERATOR::SimpleEventGenerator[0]->add_particles("pi-", 1);
-
-    INPUTGENERATOR::SimpleEventGenerator[0]->set_vertex_distribution_function(PHG4SimpleEventGenerator::Gaus,
-                                                                            PHG4SimpleEventGenerator::Gaus,
-                                                                            PHG4SimpleEventGenerator::Gaus);
+      INPUTGENERATOR::SimpleEventGenerator[0]->set_vertex_distribution_function(PHG4SimpleEventGenerator::Gaus,
+                                                                              PHG4SimpleEventGenerator::Gaus,
+                                                                              PHG4SimpleEventGenerator::Gaus);
       INPUTGENERATOR::SimpleEventGenerator[0]->set_vertex_distribution_mean(0., 0., 0.);
       INPUTGENERATOR::SimpleEventGenerator[0]->set_vertex_distribution_width(0.01, 0.01, 5.);
-    
-    INPUTGENERATOR::SimpleEventGenerator[0]->set_eta_range(0, 1);
-    INPUTGENERATOR::SimpleEventGenerator[0]->set_phi_range(-M_PI, M_PI);
-    INPUTGENERATOR::SimpleEventGenerator[0]->set_pt_range(0.5, 4);
- 
+      
+      INPUTGENERATOR::SimpleEventGenerator[0]->set_eta_range(0, 1);
+      INPUTGENERATOR::SimpleEventGenerator[0]->set_phi_range(-M_PI, M_PI);
+      INPUTGENERATOR::SimpleEventGenerator[0]->set_pt_range(3, 10);
+      INPUTGENERATOR::SimpleEventGenerator[0]->set_power_law_n(8);
+    }
+
+
+
+    if (Input::UPSILON)
+    {
+      INPUTGENERATOR::VectorMesonGenerator[0]->add_decay_particles("e", 0);
+      INPUTGENERATOR::VectorMesonGenerator[0]->set_rapidity_range(-1, 1);
+      INPUTGENERATOR::VectorMesonGenerator[0]->set_pt_range(4., 10.);
+      // Y species - select only one, last one wins
+      INPUTGENERATOR::VectorMesonGenerator[0]->set_upsilon_1s();
+    }
+
     InputRegister();
 
 
@@ -163,6 +181,7 @@ int Fun4All_G4_sPHENIX(
   Enable::TRACK_MATCHING_TREE = Enable::TRACK_MATCHING && true;
   Enable::TRACK_MATCHING_TREE_CLUSTERS = Enable::TRACK_MATCHING_TREE && true;
 
+
    TRACKING::pp_mode = true;
   // TRACKING::pp_extended_readout_time = 20000;
 
@@ -192,8 +211,8 @@ int Fun4All_G4_sPHENIX(
   // 64 bit timestamp
   rc->set_uint64Flag("TIMESTAMP",CDB::timestamp);
 
-  Enable::MVTX_APPLYMISALIGNMENT = true;
-  ACTSGEOM::mvtx_applymisalignment = Enable::MVTX_APPLYMISALIGNMENT; 
+  //Enable::MVTX_APPLYMISALIGNMENT = true;
+  //ACTSGEOM::mvtx_applymisalignment = Enable::MVTX_APPLYMISALIGNMENT; 
 
   G4Init();
 
@@ -249,6 +268,13 @@ G4TPC::DO_HIT_ASSOCIATION = true;
   resid->convertSeeds(G4TRACKING::convert_seeds_to_svtxtracks);
   resid->Verbosity(0);
   //se->registerSubsystem(resid);
+
+std::cout<<"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"<<std::endl;
+std::cout<<"G4TPC::TPC_GAS_MIXTURE = "<<G4TPC::TPC_GAS_MIXTURE<<std::endl;
+std::cout<<"G4TPC::ArCF4Isobutane_drift_velocity = "<<G4TPC::ArCF4Isobutane_drift_velocity<<std::endl;
+std::cout<<"diffusion_long = "<<G4TPC::ArCF4Isobutane_diffusion_long<<std::endl;
+std::cout<<"diffusion_trans = "<<G4TPC::ArCF4Isobutane_diffusion_trans<<std::endl;
+
 
 
   TString phaseoutfile = theOutfile_phase + "_phase.root";
