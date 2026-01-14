@@ -80,17 +80,17 @@ namespace
 
   // ------ existing helpers (square, r, get_cluster_keys) stay here ------
   struct SimpleKalmanState
-{
-  double x, y, z;     // position
-  double tx, ty;      // slopes dx/dz, dy/dz
-  double cov[5][5];   // covariance matrix
-};
+  {
+    double x, y, z;     // position
+    double tx, ty;      // slopes dx/dz, dy/dz
+    double cov[5][5];   // covariance matrix
+  };
 
-struct SimpleMeasurement
-{
-  double x, y, z;
-  double sigma2; // measurement variance
-};
+  struct SimpleMeasurement
+  {
+    double x, y, z;
+    double sigma2; // measurement variance
+  };
 
 
   // Small epsilon for numeric safety
@@ -99,397 +99,434 @@ struct SimpleMeasurement
   // Taubin circle fit in XY (y vs x)
   // Returns true on success and fills xc, yc, R
 
-struct TrackCircleGuess {
-  double xc = 0.;
-  double yc = 0.;
-  double R  = 0.;
-};
+  struct TrackCircleGuess {
+    double xc = 0.;
+    double yc = 0.;
+    double R  = 0.;
+  };
 
-TrackCircleGuess initialCircleFromTrack(const SvtxTrack* track, double Bz_T)
-{
-  TrackCircleGuess out;
-  if (!track || std::fabs(Bz_T) < 1e-6) {
-    out.R = 1e9;
+  TrackCircleGuess initialCircleFromTrack(const SvtxTrack* track, double Bz_T)
+  {
+    TrackCircleGuess out;
+    if (!track || std::fabs(Bz_T) < 1e-6) {
+      out.R = 1e9;
+      return out;
+    }
+
+    const double q = (track->get_charge() == 0 ? 1.0 : track->get_charge());
+    const double pt = std::max(1e-6, double(track->get_pt())); // GeV/c
+    const double phi0 = track->get_phi(); // rad
+    const double x0 = track->get_x();     // cm
+    const double y0 = track->get_y();     // cm
+
+    // pT [GeV/c], B [T]  →  R [m];  multiply by 100 to get cm
+    const double Rphys = 100.0 * pt / (0.3 * std::fabs(Bz_T)); // cm
+
+    // charge–field orientation: curvature sign
+    const double s = (q * Bz_T > 0) ? +1.0 : -1.0;
+
+    // circle center is 90° rotated from momentum direction
+    out.xc = x0 + s * Rphys * std::cos(phi0 + s * M_PI_2);
+    out.yc = y0 + s * Rphys * std::sin(phi0 + s * M_PI_2);
+    out.R  = Rphys;
+
+  // std::cout<<" initialCircleFromTrack: xc "<<out.xc<<" yc "<<out.yc<<" R "<<out.R<<std::endl;
+
     return out;
   }
-
-  const double q = (track->get_charge() == 0 ? 1.0 : track->get_charge());
-  const double pt = std::max(1e-6, double(track->get_pt())); // GeV/c
-  const double phi0 = track->get_phi(); // rad
-  const double x0 = track->get_x();     // cm
-  const double y0 = track->get_y();     // cm
-
-  // pT [GeV/c], B [T]  →  R [m];  multiply by 100 to get cm
-  const double Rphys = 100.0 * pt / (0.3 * std::fabs(Bz_T)); // cm
-
-  // charge–field orientation: curvature sign
-  const double s = (q * Bz_T > 0) ? +1.0 : -1.0;
-
-  // circle center is 90° rotated from momentum direction
-  out.xc = x0 + s * Rphys * std::cos(phi0 + s * M_PI_2);
-  out.yc = y0 + s * Rphys * std::sin(phi0 + s * M_PI_2);
-  out.R  = Rphys;
-
- // std::cout<<" initialCircleFromTrack: xc "<<out.xc<<" yc "<<out.yc<<" R "<<out.R<<std::endl;
-
-  return out;
-}
-// -------------------------------------------------------------
-// Solve 3x3 system A x = b (simple Gaussian elimination)
-// -------------------------------------------------------------
-bool solve3x3(const double A[3][3], const double b[3], double x[3])
-{
-  // Copy so we can modify
-  double M[3][3];
-  double rhs[3];
-  for (int i = 0; i < 3; ++i)
+  // -------------------------------------------------------------
+  // Solve 3x3 system A x = b (simple Gaussian elimination)
+  // -------------------------------------------------------------
+  bool solve3x3(const double A[3][3], const double b[3], double x[3])
   {
-    rhs[i] = b[i];
-    for (int j = 0; j < 3; ++j) M[i][j] = A[i][j];
-  }
-
-  // Forward elimination
-  for (int k = 0; k < 3; ++k)
-  {
-    // Find pivot
-    int piv = k;
-    double maxAbs = std::fabs(M[k][k]);
-    for (int i = k + 1; i < 3; ++i)
+    // Copy so we can modify
+    double M[3][3];
+    double rhs[3];
+    for (int i = 0; i < 3; ++i)
     {
-      double val = std::fabs(M[i][k]);
-      if (val > maxAbs)
+      rhs[i] = b[i];
+      for (int j = 0; j < 3; ++j) M[i][j] = A[i][j];
+    }
+
+    // Forward elimination
+    for (int k = 0; k < 3; ++k)
+    {
+      // Find pivot
+      int piv = k;
+      double maxAbs = std::fabs(M[k][k]);
+      for (int i = k + 1; i < 3; ++i)
       {
-        maxAbs = val;
-        piv = i;
+        double val = std::fabs(M[i][k]);
+        if (val > maxAbs)
+        {
+          maxAbs = val;
+          piv = i;
+        }
+      }
+
+      if (maxAbs < 1e-20) return false;
+
+      // Swap rows if needed
+      if (piv != k)
+      {
+        for (int j = 0; j < 3; ++j) std::swap(M[k][j], M[piv][j]);
+        std::swap(rhs[k], rhs[piv]);
+      }
+
+      // Eliminate below
+      const double diag = M[k][k];
+      for (int i = k + 1; i < 3; ++i)
+      {
+        const double f = M[i][k] / diag;
+        rhs[i] -= f * rhs[k];
+        for (int j = k; j < 3; ++j) M[i][j] -= f * M[k][j];
       }
     }
 
-    if (maxAbs < 1e-20) return false;
-
-    // Swap rows if needed
-    if (piv != k)
+    // Back substitution
+    for (int i = 2; i >= 0; --i)
     {
-      for (int j = 0; j < 3; ++j) std::swap(M[k][j], M[piv][j]);
-      std::swap(rhs[k], rhs[piv]);
+      double sum = rhs[i];
+      for (int j = i + 1; j < 3; ++j) sum -= M[i][j] * x[j];
+      if (std::fabs(M[i][i]) < 1e-20) return false;
+      x[i] = sum / M[i][i];
     }
+    return true;
+  }
 
-    // Eliminate below
-    const double diag = M[k][k];
-    for (int i = k + 1; i < 3; ++i)
+  // Sagitta model in C++: same as Python sagitta_model
+  static void sagittaModelCpp(
+      double S, double x0, double invR,
+      const std::vector<double>& up,
+      std::vector<double>& f_out)
+  {
+    const size_t n = up.size();
+    f_out.resize(n);
+
+    for (size_t i = 0; i < n; ++i)
     {
-      const double f = M[i][k] / diag;
-      rhs[i] -= f * rhs[k];
-      for (int j = k; j < 3; ++j) M[i][j] -= f * M[k][j];
-    }
-  }
+      const double dx  = up[i] - x0;
+      const double dx2 = dx*dx;
+      const double dx4 = dx2*dx2;
+      const double dx6 = dx4*dx2;
 
-  // Back substitution
-  for (int i = 2; i >= 0; --i)
-  {
-    double sum = rhs[i];
-    for (int j = i + 1; j < 3; ++j) sum -= M[i][j] * x[j];
-    if (std::fabs(M[i][i]) < 1e-20) return false;
-    x[i] = sum / M[i][i];
-  }
-  return true;
-}
+      const double invR3 = invR*invR*invR;
+      const double invR5 = invR3*invR*invR;
 
-// Sagitta model in C++: same as Python sagitta_model
-static void sagittaModelCpp(
-    double S, double x0, double invR,
-    const std::vector<double>& up,
-    std::vector<double>& f_out)
-{
-  const size_t n = up.size();
-  f_out.resize(n);
-
-  for (size_t i = 0; i < n; ++i)
-  {
-    const double dx  = up[i] - x0;
-    const double dx2 = dx*dx;
-    const double dx4 = dx2*dx2;
-    const double dx6 = dx4*dx2;
-
-    const double invR3 = invR*invR*invR;
-    const double invR5 = invR3*invR*invR;
-
-    f_out[i] =
-      S
-      - 0.5   * invR  * dx2
-      - 0.125 * invR3 * dx4
-      - 0.0625* invR5 * dx6;
-  }
-}
-
-bool fitCircleSagittaXY(
-  const std::vector<std::pair<double,double>>& pts,
-  double& xc_out, double& yc_out, double& R_out)
-{
-  const size_t n = pts.size();
-  if (n < 3) return false;
-
-  // ------------------------------------------------------------
-  // 1) Straight line fit y = m x + b  (same as rotate_points_to_x_axis)
-  // ------------------------------------------------------------
-  double Sx = 0., Sy = 0., Sxx = 0., Sxy = 0.;
-  for (size_t i = 0; i < n; ++i)
-  {
-    const double x = pts[i].first;
-    const double y = pts[i].second;
-    Sx  += x;
-    Sy  += y;
-    Sxx += x*x;
-    Sxy += x*y;
-  }
-
-  const double denom = n*Sxx - Sx*Sx;
-  double m = 0., b = 0.;
-  if (std::fabs(denom) > 1e-20)
-  {
-    m = (n*Sxy - Sx*Sy) / denom;
-    b = (Sy - m*Sx) / n;
-  }
-  else
-  {
-    m = 0.;
-    b = (n > 0) ? (Sy / n) : 0.;
-  }
-
-  const double theta = std::atan(m);
-  const double cth   = std::cos(theta);
-  const double sth   = std::sin(theta);
-  //std::cout<<" m = "<<m<<" theta = "<<theta<<" b = "<<b<<std::endl;
-
-  // ------------------------------------------------------------
-  // 2) Rotate to (x', y') where chord is horizontal
-  // ------------------------------------------------------------
-  std::vector<double> up(n), vp(n);
-  for (size_t i = 0; i < n; ++i)
-  {
-    const double x = pts[i].first;
-    const double y = pts[i].second;
-
-    const double x_shift = x;
-    const double y_shift = y - b; // line passes through origin
-
-    // xr = cos θ * x + sin θ * (y-b)
-    // yr = -sin θ * x + cos θ * (y-b)
-    up[i] =  cth * x_shift + sth * y_shift;
-    vp[i] = -sth * x_shift + cth * y_shift;
-   // std::cout<<"  Horizonal line x = "<<up[i]<<" y = "<<vp[i]<<std::endl;
-  }
-
-  // ------------------------------------------------------------
-  // 3) Initial guesses for S, x0, invR  (same as Python)
-  // ------------------------------------------------------------
-  double S0   = vp[0];
-  double x0_0 = up[0];
-  for (size_t i = 1; i < n; ++i)
-  {
-    if (vp[i] > S0)
-    {
-      S0   = vp[i];
-      x0_0 = up[i];
+      f_out[i] =
+        S
+        - 0.5   * invR  * dx2
+        - 0.125 * invR3 * dx4
+        - 0.0625* invR5 * dx6;
     }
   }
 
-  double S    = S0;          // sagitta height
-  double x0   = x0_0;        // apex position in x'
-  double invR = 1.0 / 100.0; // R ~ 100 cm
- // std::cout<<"Prelim Params 0 : S0  "<<S<<" x0 "<<x0<<" inv R "<<invR<<std::endl;
-// ------------------------------------------------------------
-// 4) Gauss–Newton with NUMERICAL Jacobian (like SciPy)
-// ------------------------------------------------------------
-const int    maxIter   = 50;
-const double tolDelta  = 1e-8;
-const double eps_param = 1e-6;
+  bool fitCircleSagittaXY(
+    const std::vector<std::pair<double,double>>& pts,
+    double& xc_out, double& yc_out, double& R_out)
+  {
+    const size_t n = pts.size();
+    if (n < 3) return false;
 
-std::vector<double> f(n), r(n);
-//std::cout << "Prelim Params 0 : S0 " << S << " x0 " << x0 << " invR " << invR << std::endl;
+    // ------------------------------------------------------------
+    // 1) Straight line fit y = m x + b  (same as rotate_points_to_x_axis)
+    // ------------------------------------------------------------
+    double Sx = 0., Sy = 0., Sxx = 0., Sxy = 0.;
+    for (size_t i = 0; i < n; ++i)
+    {
+      const double x = pts[i].first;
+      const double y = pts[i].second;
+      Sx  += x;
+      Sy  += y;
+      Sxx += x*x;
+      Sxy += x*y;
+    }
 
-//int it_used = 0;
-int nfev = 0;
+    const double denom = n*Sxx - Sx*Sx;
+    double m = 0., b = 0.;
+    if (std::fabs(denom) > 1e-20)
+    {
+      m = (n*Sxy - Sx*Sy) / denom;
+      b = (Sy - m*Sx) / n;
+    }
+    else
+    {
+      m = 0.;
+      b = (n > 0) ? (Sy / n) : 0.;
+    }
 
-for (int iter = 0; iter < maxIter; ++iter)
-{
- // it_used = iter + 1;
+    const double theta = std::atan(m);
+    const double cth   = std::cos(theta);
+    const double sth   = std::sin(theta);
+    //std::cout<<" m = "<<m<<" theta = "<<theta<<" b = "<<b<<std::endl;
 
-  // baseline model and residuals
+    // ------------------------------------------------------------
+    // 2) Rotate to (x', y') where chord is horizontal
+    // ------------------------------------------------------------
+    std::vector<double> up(n), vp(n);
+    for (size_t i = 0; i < n; ++i)
+    {
+      const double x = pts[i].first;
+      const double y = pts[i].second;
+
+      const double x_shift = x;
+      const double y_shift = y - b; // line passes through origin
+
+      // xr = cos θ * x + sin θ * (y-b)
+      // yr = -sin θ * x + cos θ * (y-b)
+      up[i] =  cth * x_shift + sth * y_shift;
+      vp[i] = -sth * x_shift + cth * y_shift;
+    // std::cout<<"  Horizonal line x = "<<up[i]<<" y = "<<vp[i]<<std::endl;
+    }
+
+    // ------------------------------------------------------------
+    // 3) Initial guesses for S, x0, invR  (same as Python)
+    // ------------------------------------------------------------
+    double S0   = vp[0];
+    double x0_0 = up[0];
+    for (size_t i = 1; i < n; ++i)
+    {
+      if (vp[i] > S0)
+      {
+        S0   = vp[i];
+        x0_0 = up[i];
+      }
+    }
+
+    double S    = S0;          // sagitta height
+    double x0   = x0_0;        // apex position in x'
+    double invR = 1.0 / 100.0; // R ~ 100 cm
+  // std::cout<<"Prelim Params 0 : S0  "<<S<<" x0 "<<x0<<" inv R "<<invR<<std::endl;
+  // ------------------------------------------------------------
+  // 4) Gauss–Newton with NUMERICAL Jacobian (like SciPy)
+  // ------------------------------------------------------------
+  const int    maxIter   = 50;
+  const double tolDelta  = 1e-8;
+  const double eps_param = 1e-6;
+
+  std::vector<double> f(n), r(n);
+  //std::cout << "Prelim Params 0 : S0 " << S << " x0 " << x0 << " invR " << invR << std::endl;
+
+  //int it_used = 0;
+  int nfev = 0;
+
+  for (int iter = 0; iter < maxIter; ++iter)
+  {
+  // it_used = iter + 1;
+
+    // baseline model and residuals
+    sagittaModelCpp(S, x0, invR, up, f);
+    nfev += 1;
+
+    double cost = 0.0;
+    for (size_t i = 0; i < n; ++i)
+    {
+      r[i] = f[i] - vp[i];
+      cost += 0.5 * r[i] * r[i];
+    }
+
+    // optional: print per-iteration status
+    // std::cout << "Iter " << iter << " cost = " << cost
+    //           << "  S=" << S << " x0=" << x0 << " invR=" << invR << std::endl;
+
+    double JTJ[3][3] = { {0.,0.,0.}, {0.,0.,0.}, {0.,0.,0.} };
+    double JTr[3]    = { 0., 0., 0. };
+
+    // --- compute perturbed models once per parameter ---
+    std::vector<double> fS_plus(n), fS_minus(n);
+    std::vector<double> fx0_plus(n), fx0_minus(n);
+    std::vector<double> fR_plus(n), fR_minus(n);
+
+    sagittaModelCpp(S + eps_param, x0, invR, up, fS_plus);
+    sagittaModelCpp(S - eps_param, x0, invR, up, fS_minus);
+    sagittaModelCpp(S, x0 + eps_param, invR, up, fx0_plus);
+    sagittaModelCpp(S, x0 - eps_param, invR, up, fx0_minus);
+    sagittaModelCpp(S, x0, invR + eps_param, up, fR_plus);
+    sagittaModelCpp(S, x0, invR - eps_param, up, fR_minus);
+    nfev += 6; // we did 6 extra evaluations
+
+    for (size_t i = 0; i < n; ++i)
+    {
+      const double dfdS    = (fS_plus[i]  - fS_minus[i])  / (2.0 * eps_param);
+      const double dfdx0   = (fx0_plus[i] - fx0_minus[i]) / (2.0 * eps_param);
+      const double dfdinvR = (fR_plus[i]  - fR_minus[i])  / (2.0 * eps_param);
+
+      const double J[3] = { dfdS, dfdx0, dfdinvR };
+      const double ri   = r[i];
+
+      for (int a = 0; a < 3; ++a)
+      {
+        JTr[a] += J[a] * ri;
+        for (int j = 0; j < 3; ++j)
+          JTJ[a][j] += J[a] * J[j];
+      }
+    }
+
+    // Solve (J^T J) Δ = - J^T r
+    for (int a = 0; a < 3; ++a) JTr[a] = -JTr[a];
+
+    double delta[3] = {0.,0.,0.};
+    if (!solve3x3(JTJ, JTr, delta)) break;
+
+    const double alpha = 1.0; // SciPy uses line search, we keep full step
+    S    += alpha * delta[0];
+    x0   += alpha * delta[1];
+    invR += alpha * delta[2];
+
+    if (!std::isfinite(S) || !std::isfinite(x0) || !std::isfinite(invR))
+      break;
+
+    if (invR == 0.) invR = 1.0 / 100.0;
+
+    const double maxDelta =
+      std::max(std::fabs(delta[0]),
+      std::max(std::fabs(delta[1]), std::fabs(delta[2])));
+
+    if (maxDelta < tolDelta) break;
+  }
+
+  // after the loop:
+  const double R = (invR != 0.0) ? (1.0 / invR) : 1e9;
+  if (!std::isfinite(R) || R == 0.) return false;
+
+  // final debug print (Python-style)
+  double final_cost = 0.0;
   sagittaModelCpp(S, x0, invR, up, f);
-  nfev += 1;
-
-  double cost = 0.0;
   for (size_t i = 0; i < n; ++i)
   {
-    r[i] = f[i] - vp[i];
-    cost += 0.5 * r[i] * r[i];
+    const double ri = f[i] - vp[i];
+    final_cost += 0.5 * ri * ri;
+  }
+  /*
+  std::cout << "---------------- SAGITTA FIT RESULT ----------------\n"
+            << "S       = " << S    << "\n"
+            << "x0      = " << x0   << "\n"
+            << "invR    = " << invR << "\n"
+            << "R       = " << R    << "\n"
+            << "Final cost (0.5 * sum r^2) = " << final_cost << "\n"
+            << "Iterations = " << it_used << "\n"
+            << "Function evaluations (approx) = " << nfev << "\n"
+            << "----------------------------------------------------\n";
+
+  */
+
+
+        // signed radius
+      // R = (invR != 0.0) ? (1.0 / invR) : 1e9;
+        if (!std::isfinite(R)) return false;
+
+        // geometry uses |R|
+        const double Rmag = std::fabs(R);
+
+        // 5) Back to (x,y): center in rotated frame, allow signed R
+        const double Xc_prime = x0;
+        const double Yc_prime = S - R;     // signed curvature
+
+        const double xc_shift =  cth * Xc_prime - sth * Yc_prime;
+        const double yc_shift =  sth * Xc_prime + cth * Yc_prime;
+
+        const double xc = xc_shift;
+        const double yc = yc_shift + b;
+
+        if (!std::isfinite(xc) || !std::isfinite(yc))
+            return false;
+
+        xc_out = xc;
+        yc_out = yc;
+        R_out  = Rmag;     // return positive geometric radius
+        return true;
+
   }
 
-  // optional: print per-iteration status
-  // std::cout << "Iter " << iter << " cost = " << cost
-  //           << "  S=" << S << " x0=" << x0 << " invR=" << invR << std::endl;
 
-  double JTJ[3][3] = { {0.,0.,0.}, {0.,0.,0.}, {0.,0.,0.} };
-  double JTr[3]    = { 0., 0., 0. };
 
-  // --- compute perturbed models once per parameter ---
-  std::vector<double> fS_plus(n), fS_minus(n);
-  std::vector<double> fx0_plus(n), fx0_minus(n);
-  std::vector<double> fR_plus(n), fR_minus(n);
 
-  sagittaModelCpp(S + eps_param, x0, invR, up, fS_plus);
-  sagittaModelCpp(S - eps_param, x0, invR, up, fS_minus);
-  sagittaModelCpp(S, x0 + eps_param, invR, up, fx0_plus);
-  sagittaModelCpp(S, x0 - eps_param, invR, up, fx0_minus);
-  sagittaModelCpp(S, x0, invR + eps_param, up, fR_plus);
-  sagittaModelCpp(S, x0, invR - eps_param, up, fR_minus);
-  nfev += 6; // we did 6 extra evaluations
 
-  for (size_t i = 0; i < n; ++i)
+    // Intersect fitted circle (xc,yc,R) with origin-centered circle of radius rLayer.
+    // Returns up to 2 points in outPts. True if intersection exists.
+  // ---------- helper: circle-circle intersection ----------
+  // Circle1: (xc,yc), R1 ; Circle2: (0,0), R2
+  bool intersectTwoCircles(
+    double xc, double yc,
+    double R1,          // track circle radius
+    double R2,          // layer radius (around origin)
+    std::pair<double,double>& P1,
+    std::pair<double,double>& P2,
+    bool& twoSol)
   {
-    const double dfdS    = (fS_plus[i]  - fS_minus[i])  / (2.0 * eps_param);
-    const double dfdx0   = (fx0_plus[i] - fx0_minus[i]) / (2.0 * eps_param);
-    const double dfdinvR = (fR_plus[i]  - fR_minus[i])  / (2.0 * eps_param);
+    const double dx = xc;
+    const double dy = yc;
+    const double d  = std::hypot(dx, dy);
+    const double eps = 1e-9;
 
-    const double J[3] = { dfdS, dfdx0, dfdinvR };
-    const double ri   = r[i];
-
-    for (int a = 0; a < 3; ++a)
+    // no intersection (too far apart, contained, or degenerate)
+    if (d < eps || d > R1 + R2 + eps || d < std::fabs(R1 - R2) - eps)
     {
-      JTr[a] += J[a] * ri;
-      for (int j = 0; j < 3; ++j)
-        JTJ[a][j] += J[a] * J[j];
+      twoSol = false;
+      return false;
     }
+
+    // *** THIS is the crucial line ***
+    // distance from origin (layer center) to the "base point" along the line to (xc,yc)
+    const double a = (R2*R2 - R1*R1 + d*d) / (2.0*d);
+    // (your version used R1^2 - R2^2 + d^2, which is reversed)
+
+    double h2 = R2*R2 - a*a;
+    if (h2 < 0.0) h2 = 0.0;
+    const double h = std::sqrt(h2);
+
+    // base point on the line from origin to (xc,yc)
+    const double px = (a/d) * dx;
+    const double py = (a/d) * dy;
+
+    // perpendicular offsets
+    const double offx = (h/d) * (-dy);
+    const double offy = (h/d) * ( dx);
+
+    P1 = std::make_pair(px + offx, py + offy);
+    P2 = std::make_pair(px - offx, py - offy);
+
+    twoSol = (h > eps);
+    return true;
   }
 
-  // Solve (J^T J) Δ = - J^T r
-  for (int a = 0; a < 3; ++a) JTr[a] = -JTr[a];
 
-  double delta[3] = {0.,0.,0.};
-  if (!solve3x3(JTJ, JTr, delta)) break;
-
-  const double alpha = 1.0; // SciPy uses line search, we keep full step
-  S    += alpha * delta[0];
-  x0   += alpha * delta[1];
-  invR += alpha * delta[2];
-
-  if (!std::isfinite(S) || !std::isfinite(x0) || !std::isfinite(invR))
-    break;
-
-  if (invR == 0.) invR = 1.0 / 100.0;
-
-  const double maxDelta =
-    std::max(std::fabs(delta[0]),
-    std::max(std::fabs(delta[1]), std::fabs(delta[2])));
-
-  if (maxDelta < tolDelta) break;
-}
-
-// after the loop:
-const double R = (invR != 0.0) ? (1.0 / invR) : 1e9;
-if (!std::isfinite(R) || R == 0.) return false;
-
-// final debug print (Python-style)
-double final_cost = 0.0;
-sagittaModelCpp(S, x0, invR, up, f);
-for (size_t i = 0; i < n; ++i)
+// wrap to (-pi, pi]
+static inline float wrap_pi(float a)
 {
-  const double ri = f[i] - vp[i];
-  final_cost += 0.5 * ri * ri;
-}
-/*
-std::cout << "---------------- SAGITTA FIT RESULT ----------------\n"
-          << "S       = " << S    << "\n"
-          << "x0      = " << x0   << "\n"
-          << "invR    = " << invR << "\n"
-          << "R       = " << R    << "\n"
-          << "Final cost (0.5 * sum r^2) = " << final_cost << "\n"
-          << "Iterations = " << it_used << "\n"
-          << "Function evaluations (approx) = " << nfev << "\n"
-          << "----------------------------------------------------\n";
-
-*/
-
-
-      // signed radius
-     // R = (invR != 0.0) ? (1.0 / invR) : 1e9;
-      if (!std::isfinite(R)) return false;
-
-      // geometry uses |R|
-      const double Rmag = std::fabs(R);
-
-      // 5) Back to (x,y): center in rotated frame, allow signed R
-      const double Xc_prime = x0;
-      const double Yc_prime = S - R;     // signed curvature
-
-      const double xc_shift =  cth * Xc_prime - sth * Yc_prime;
-      const double yc_shift =  sth * Xc_prime + cth * Yc_prime;
-
-      const double xc = xc_shift;
-      const double yc = yc_shift + b;
-
-      if (!std::isfinite(xc) || !std::isfinite(yc))
-          return false;
-
-      xc_out = xc;
-      yc_out = yc;
-      R_out  = Rmag;     // return positive geometric radius
-      return true;
-
+  while (a >  M_PI) a -= 2.0f*M_PI;
+  while (a <= -M_PI) a += 2.0f*M_PI;
+  return a;
 }
 
-
-
-
-
-  // Intersect fitted circle (xc,yc,R) with origin-centered circle of radius rLayer.
-  // Returns up to 2 points in outPts. True if intersection exists.
-// ---------- helper: circle-circle intersection ----------
-// Circle1: (xc,yc), R1 ; Circle2: (0,0), R2
-bool intersectTwoCircles(
-  double xc, double yc,
-  double R1,          // track circle radius
-  double R2,          // layer radius (around origin)
-  std::pair<double,double>& P1,
-  std::pair<double,double>& P2,
-  bool& twoSol)
+// check if phi is in (down, up] along the wrapped circle
+static inline bool in_sector_interval(float phi, float down, float up)
 {
-  const double dx = xc;
-  const double dy = yc;
-  const double d  = std::hypot(dx, dy);
-  const double eps = 1e-9;
+  // normal case: interval does NOT cross the -pi/pi seam
+  if (down <= up) return (phi > down && phi <= up);
 
-  // no intersection (too far apart, contained, or degenerate)
-  if (d < eps || d > R1 + R2 + eps || d < std::fabs(R1 - R2) - eps)
+  // seam-crossing case, e.g. down=+170deg, up=-170deg
+  return (phi > down || phi <= up);
+}
+
+// returns 0..11, or -1 if something goes wrong
+int sector_from_phi(float phi)
+{
+  const float SectorAngle = (float)(M_PI/6.0);     // 30 deg
+  const float AngleStart  = (float)(M_PI - SectorAngle/2.0); // 165 deg
+
+  const float p = wrap_pi(phi);
+
+  for (int s = 0; s < 12; ++s)
   {
-    twoSol = false;
-    return false;
+    float up   = wrap_pi(AngleStart - s*SectorAngle);
+    float down = wrap_pi(up - SectorAngle);
+
+    if (in_sector_interval(p, down, up)) return s;
   }
 
-  // *** THIS is the crucial line ***
-  // distance from origin (layer center) to the "base point" along the line to (xc,yc)
-  const double a = (R2*R2 - R1*R1 + d*d) / (2.0*d);
-  // (your version used R1^2 - R2^2 + d^2, which is reversed)
-
-  double h2 = R2*R2 - a*a;
-  if (h2 < 0.0) h2 = 0.0;
-  const double h = std::sqrt(h2);
-
-  // base point on the line from origin to (xc,yc)
-  const double px = (a/d) * dx;
-  const double py = (a/d) * dy;
-
-  // perpendicular offsets
-  const double offx = (h/d) * (-dy);
-  const double offy = (h/d) * ( dx);
-
-  P1 = std::make_pair(px + offx, py + offy);
-  P2 = std::make_pair(px - offx, py - offy);
-
-  twoSol = (h > eps);
-  return true;
+  return -1;
 }
-
 
 
 }  // namespace
@@ -551,6 +588,10 @@ int ClusterPhaseAnalysis::Init(PHCompositeNode* /*topNode*/)
   m_tree->Branch("cluster_adc", &m_cluster_adc, "m_cluster_adc/I");
   m_tree->Branch("cluster_max_adc", &m_cluster_max_adc, "m_cluster_max_adc/I");
   m_tree->Branch("cluster_layer", &m_cluster_layer, "m_cluster_layer/I");
+  m_tree->Branch("cluster_side", &m_cluster_side, "m_cluster_side/I");
+  m_tree->Branch("cluster_sector", &m_cluster_sector, "m_cluster_sector/I");
+  m_tree->Branch("cluster_e", &m_cluster_e, "m_cluster_e/F");
+  m_tree->Branch("cluster_e_simple", &m_cluster_e_simple, "m_cluster_e_simple/F");
   m_tree->Branch("cluster_size", &m_cluster_size, "m_cluster_size/I");
   m_tree->Branch("cluster_size_phi", &m_cluster_size_phi, "m_cluster_size_phi/I");
   m_tree->Branch("cluster_size_time", &m_cluster_size_time, "m_cluster_size_time/I");
@@ -577,6 +618,9 @@ int ClusterPhaseAnalysis::Init(PHCompositeNode* /*topNode*/)
   m_tree->Branch("sim_truth_cluster_time", &m_sim_truth_cluster_time, "m_sim_truth_cluster_time/F"); 
   m_tree->Branch("sim_cluster_residual_rphi", &m_sim_cluster_residual_rphi, "m_sim_cluster_residual_rphi/F");
   m_tree->Branch("sim_cluster_residual_time", &m_sim_cluster_residual_time, "m_sim_cluster_residual_time/F");
+  m_tree->Branch("cluster_resolution_rphi", &m_cluster_resolution_rphi, "m_cluster_resolution_rphi/F");
+  m_tree->Branch("cluster_resolution_phi", &m_cluster_resolution_phi, "m_cluster_resolution_phi/F");
+
 
 
   // Hit-level branches (nested vectors)
@@ -644,7 +688,13 @@ void ClusterPhaseAnalysis::processTracks()
     {
         std::cout << "ClusterPhaseAnalysis::processTracks - proto track size " << trackmap->size() << std::endl;
     }
-
+    if((int)trackmap->size()>ntracksmax){
+        std::cout << "WARNING: SvtxTrackMap size "<<trackmap->size()<<" exceeds maximum "<<ntracksmax<<"! Skip event"<<std::endl;
+        return;
+    } else if ((int)trackmap->size()<ntracksmin){
+        std::cout << "WARNING: SvtxTrackMap is empty! Skip event"<<std::endl;
+        return;
+    }
     for (const auto& [trackKey, track] : *trackmap)
     {
         if (!track)
@@ -661,6 +711,7 @@ void ClusterPhaseAnalysis::processTracks()
         {
            // if(!isSimulation) 
             ComputeFitTruthAtLayer( track);
+            ComputeLinearFitFromNeighbors(track);  
             FillClusters(track);
             
 
@@ -757,8 +808,12 @@ void ClusterPhaseAnalysis::FillClusters(SvtxTrack* track)
     
       int adc = cluster->getAdc();
       int max_adc = cluster->getMaxAdc();
+      float phi_err = cluster->getPhiError();
+     
     
       unsigned int layer = TrkrDefs::getLayer(cluskey);
+      const int side   = (int)TpcDefs::getSide(cluskey);     // 0 or 1
+      const int sector = sector_from_phi(phi);
 
       m_cluster_x = x;
       m_cluster_y = y;
@@ -770,6 +825,10 @@ void ClusterPhaseAnalysis::FillClusters(SvtxTrack* track)
       m_cluster_adc = adc;
       m_cluster_max_adc = max_adc;
       m_cluster_layer = layer;
+      m_cluster_side = side;
+      m_cluster_sector = sector;
+      m_cluster_e = phi_err;
+
 
       if(isSimulation){
         FindTruthClusters(cluskey, glob);
@@ -782,15 +841,23 @@ void ClusterPhaseAnalysis::FillClusters(SvtxTrack* track)
 
       FillHits(cluskey);  
       CalculatePhase(cluskey);
-
       m_cluster_residual_rphi = residual_rphi_map.count(cluskey) ? residual_rphi_map[cluskey] : NAN;
       m_cluster_residual_time = residual_time_map.count(cluskey) ? residual_time_map[cluskey] : NAN;
       m_truth_cluster_x = m_truth_cluster_x_map.count(cluskey) ? m_truth_cluster_x_map[cluskey] : NAN;
       m_truth_cluster_y = m_truth_cluster_y_map.count(cluskey) ? m_truth_cluster_y_map[cluskey] : NAN;
       m_truth_cluster_z = m_truth_cluster_z_map.count(cluskey) ? m_truth_cluster_z_map[cluskey] : NAN;
-std::cout<<"  !!!!!! cluster "<<cluskey<<" m_cluster_x "<<m_cluster_x<<" m_cluster_y "<<m_cluster_y<<" m_cluster_z "<<m_cluster_z<<std::endl;
-std::cout<<"  !!!!!! cluster "<<cluskey<<" m_truth_cluster_x "<<m_truth_cluster_x<<" m_truth_cluster_y "<<m_truth_cluster_y<<" m_truth_cluster_z "<<m_truth_cluster_z<<"   -- m_cluster_residual_rphi "<<m_cluster_residual_rphi<<std::endl;
+      std::cout<<"  !!!!!! cluster "<<cluskey<<" m_cluster_x "<<m_cluster_x<<" m_cluster_y "<<m_cluster_y<<" m_cluster_z "<<m_cluster_z<<std::endl;
+      std::cout<<"  !!!!!! cluster "<<cluskey<<" m_truth_cluster_x "<<m_truth_cluster_x<<" m_truth_cluster_y "<<m_truth_cluster_y<<" m_truth_cluster_z "<<m_truth_cluster_z<<"   -- m_cluster_residual_rphi "<<m_cluster_residual_rphi<<std::endl;
       std::cout<<"FILL TREE"<<std::endl;
+
+
+      m_cluster_resolution_rphi = resolution_rphi_map.count(cluskey) ? resolution_rphi_map[cluskey] : NAN;
+      m_cluster_resolution_phi = resolution_phi_map.count(cluskey) ? resolution_phi_map[cluskey] : NAN;
+
+      std::cout << "  !!!!!! cluster " << cluskey 
+                << " resolution_rphi " << m_cluster_resolution_rphi 
+                << " resolution_phi " << m_cluster_resolution_phi << std::endl;
+
       m_tree->Fill();
   }
 }
@@ -987,6 +1054,7 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
   int hitlayer = TrkrDefs::getLayer(hskey);
   auto *geoLayer = tpcGeom->GetLayerCellGeom(hitlayer);
   float phiwidth = geoLayer->get_phistep();
+  float radius = geoLayer->get_radius();
   float twidth = geoLayer->get_zstep();
   const size_t N = m_hit_adc.size();
 
@@ -1004,14 +1072,22 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
   int max_adc_sum_by_pad = 0, max_adc_sum_by_tbin =0;
   //int  max_adc_sum_by_pad_pad = -1, max_adc_sum_by_tbin_tbin=-1;
   float max_adc_phi_bin = 0, max_adc_time_bin = 0;
-
+  int iphi2_sum = 0, iphi_sum=0;
+    int adc_sum = 0;
   for (size_t i = 0; i < N; ++i) 
   {
+    iphi_sum += m_hit_pad[i] * m_hit_adc[i];
+    iphi2_sum += square(m_hit_pad[i]) * m_hit_adc[i];
+    adc_sum += m_hit_adc[i];
     sum_by_tbin[m_hit_time[i]] += static_cast<double>(m_hit_adc[i]);
     sum_by_pad[m_hit_phi[i]] += static_cast<double>(m_hit_adc[i]);
   // std::cout<<"   hit phi "<<m_hit_phi[i]<<" time "<<m_hit_time[i]<<" adc "<<m_hit_adc[i]<<std::endl;
   }
 
+  float  clusiphi = iphi_sum / adc_sum;
+  double phi_cov = (iphi2_sum / adc_sum - square(clusiphi)) * pow(phiwidth, 2);
+  double phi_err = radius*std::sqrt(phi_cov / (adc_sum * 0.14));
+  m_cluster_e_simple = phi_err;
 
   for (const auto& entry : sum_by_pad) 
   {
@@ -1040,6 +1116,8 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
   }
 
   float dNdPhase_time = (float)(m_cluster_time- max_adc_time_bin)/(twidth);
+
+
 
   m_cluster_size_phi = sum_by_pad.size();
   m_cluster_size_time = sum_by_tbin.size();
@@ -1094,6 +1172,7 @@ void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
     const unsigned int layer = TrkrDefs::getLayer(ckey);
 
     // only TPC layers
+    if (layer == 7 || layer == 22 || layer == 23 || layer == 38 || layer == 39 || layer == 54) continue;
     if (layer < first_tpc_layer || layer > last_tpc_layer) continue;
 
     const unsigned int idx = (layer - first_tpc_layer) / n_layers_region;
@@ -1106,6 +1185,17 @@ void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
     const double x = g.x();
     const double y = g.y();
 
+    if (c->getEdge() != 0) continue;
+    
+      /*const int side   = (int)TpcDefs::getSide(ckey);          // 0 or 1
+      const int sector = sector_from_phi(std::atan2(g.y(), g.x()));
+
+      const std::vector<int>& allowed = good_sectors[side][(int)(layer - 7)/16];
+      if (std::find(allowed.begin(), allowed.end(), sector) == allowed.end())
+      {
+        continue;  // not a “good” sector for this side/region
+      }
+*/
     regions[idx].pts.push_back(std::make_pair(x,y));
     regions[idx].keys.push_back(ckey);
     allPts.push_back(std::make_pair(x,y));
@@ -1303,6 +1393,135 @@ void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
 
 
 //_____________________________________________________________________________________________
+void ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors(SvtxTrack* track)
+{
+  if (!track || !geometry || !clustermap || !tpcGeom) return;
+
+  // --- constants for region definition ---
+  const unsigned int first_tpc_layer = 7;
+  const unsigned int last_tpc_layer  = 54;
+
+  // --- collect all clusters for this track, organized by layer ---
+  std::map<unsigned int, TrkrDefs::cluskey> clustersByLayer;
+  
+  const std::vector<TrkrDefs::cluskey> clusterKeys = get_cluster_keys(track);
+
+  for (size_t i = 0; i < clusterKeys.size(); ++i)
+  {
+    const TrkrDefs::cluskey ckey = clusterKeys[i];
+    const unsigned int layer = TrkrDefs::getLayer(ckey);
+
+    // only TPC layers
+    if (layer == 7 || layer == 22 || layer == 23 || layer == 38 || layer == 39 || layer == 54) continue;
+    if (layer < first_tpc_layer || layer > last_tpc_layer) continue;
+
+    TrkrCluster* c = clustermap->findCluster(ckey);
+    if (!c) continue;
+    
+    if (c->getEdge() != 0) continue;
+
+    clustersByLayer[layer] = ckey;  // Only one cluster per layer
+  }
+
+  if (clustersByLayer.empty()) return;
+
+  // --- For each cluster, fit line through neighbors in layer-1 and layer+1 ---
+  for (auto& layerPair : clustersByLayer)
+  {
+    const unsigned int currentLayer = layerPair.first;
+    const TrkrDefs::cluskey ckey = layerPair.second;
+
+    // Get neighboring layers
+    const unsigned int layerMinus1 = currentLayer - 1;
+    const unsigned int layerPlus1  = currentLayer + 1;
+
+    // Check if neighboring layers exist and have clusters
+    auto itMinus1 = clustersByLayer.find(layerMinus1);
+    auto itPlus1  = clustersByLayer.find(layerPlus1);
+
+    if (itMinus1 == clustersByLayer.end() || itPlus1 == clustersByLayer.end())
+    {
+      std::cout << "ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors -- Layer " << currentLayer
+                << " missing neighbors, skipping" << std::endl;
+      continue;
+    }
+
+    // Get the current cluster position
+    TrkrCluster* c = clustermap->findCluster(ckey);
+    if (!c) continue;
+
+    const Acts::Vector3 gCurrent = geometry->getGlobalPosition(ckey, c);
+    const double xCurrent = gCurrent.x();
+    const double yCurrent = gCurrent.y();
+   // const double zCurrent = gCurrent.z();
+    const double rCurrent = std::sqrt(xCurrent*xCurrent + yCurrent*yCurrent);
+    const double phiCurrent = std::atan2(yCurrent, xCurrent);
+
+    // Get neighbor cluster from layer-1
+    TrkrCluster* cMinus1 = clustermap->findCluster(itMinus1->second);
+    if (!cMinus1) continue;
+    
+    const Acts::Vector3 gMinus1 = geometry->getGlobalPosition(itMinus1->second, cMinus1);
+    const double xMinus1 = gMinus1.x();
+    const double yMinus1 = gMinus1.y();
+    const double rMinus1 = std::sqrt(xMinus1*xMinus1 + yMinus1*yMinus1);
+    double phiMinus1 = std::atan2(yMinus1, xMinus1);
+
+    // Get neighbor cluster from layer+1
+    TrkrCluster* cPlus1 = clustermap->findCluster(itPlus1->second);
+    if (!cPlus1) continue;
+    
+    const Acts::Vector3 gPlus1 = geometry->getGlobalPosition(itPlus1->second, cPlus1);
+    const double xPlus1 = gPlus1.x();
+    const double yPlus1 = gPlus1.y();
+    const double rPlus1 = std::sqrt(xPlus1*xPlus1 + yPlus1*yPlus1);
+    double phiPlus1 = std::atan2(yPlus1, xPlus1);
+
+    // Handle phi wrapping around 2π for consistency
+    phiMinus1 = phiCurrent + std::remainder(phiMinus1 - phiCurrent, 2.0 * M_PI);
+    phiPlus1  = phiCurrent + std::remainder(phiPlus1 - phiCurrent, 2.0 * M_PI);
+
+    // Linear fit with just 2 points: phi = a + b*r
+    // slope b = (phi2 - phi1) / (r2 - r1)
+    // intercept a = phi1 - b*r1
+    double denom = rPlus1 - rMinus1;
+    if (std::fabs(denom) < 1e-12)
+    {
+      std::cout << "ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors -- ckey " << ckey
+                << " layer " << currentLayer << " zero denominator in linear fit" << std::endl;
+      continue;
+    }
+
+    double slope = (phiPlus1 - phiMinus1) / denom;
+    double intercept = phiMinus1 - slope * rMinus1;
+
+    // Calculate fitted phi at current r
+    double phiFit = intercept + slope * rCurrent;
+
+    // Calculate residual
+    double dphi = std::remainder(phiCurrent - phiFit, 2.0 * M_PI);
+    double residual_rphi = rCurrent * dphi;
+
+    // Store results
+    //m_truth_cluster_x_map[ckey] = static_cast<float>(rCurrent * std::cos(phiFit));
+    //m_truth_cluster_y_map[ckey] = static_cast<float>(rCurrent * std::sin(phiFit));
+    //m_truth_cluster_z_map[ckey] = static_cast<float>(zCurrent);
+    
+    resolution_rphi_map[ckey] = static_cast<float>(residual_rphi);
+    resolution_phi_map[ckey] = static_cast<float>(dphi);
+   // resolution_time_map[ckey] = std::numeric_limits<float>::quiet_NaN();
+
+    std::cout << "ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors -- ckey " << ckey
+              << " layer " << currentLayer
+              << " rCurrent " << rCurrent << " phiCurrent " << phiCurrent
+              << " layer-1: r=" << rMinus1 << " phi=" << phiMinus1
+              << " layer+1: r=" << rPlus1 << " phi=" << phiPlus1
+              << " phiFit " << phiFit
+              << " residual_rphi " << residual_rphi
+              << std::endl;
+  }
+}
+//_______________________________________________________________________________
 
 int ClusterPhaseAnalysis::End(PHCompositeNode* /*topNode*/)
 {

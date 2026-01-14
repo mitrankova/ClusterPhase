@@ -42,13 +42,15 @@ class ClusterPhaseAnalysis : public SubsysReco
   void setMaxQuality(double value){ m_maxQuality = value;}
   void setRequiredTpcClusters(int value){ m_minTpcClusters = value;}
   void setIsSimulation(int value){ isSimulation = value;}
-
+  void set_ntracksmax(int value){ ntracksmax = value;}
+  void set_ntracksmin(int value){ ntracksmin = value;}
  private:
   void reset_tree_vars();
   void processTracks();
   bool checkTrack(SvtxTrack *track);
   void FillClusters(SvtxTrack *track);
   void ComputeFitTruthAtLayer(SvtxTrack *track);
+  void ComputeLinearFitFromNeighbors(SvtxTrack *track);
   void FindTruthClusters(uint64_t key, Acts::Vector3 glob);
   void FillHits(uint64_t ckey);
   void CalculatePhase(uint64_t ckey);
@@ -98,9 +100,12 @@ class ClusterPhaseAnalysis : public SubsysReco
   float m_cluster_phi = std::numeric_limits<float>::quiet_NaN();
   float m_cluster_eta = std::numeric_limits<float>::quiet_NaN();
   float m_cluster_e = std::numeric_limits<float>::quiet_NaN();
+  float m_cluster_e_simple = std::numeric_limits<float>::quiet_NaN();
   int m_cluster_adc = std::numeric_limits<int>::quiet_NaN();
   int m_cluster_max_adc = std::numeric_limits<int>::quiet_NaN();
   int m_cluster_layer = std::numeric_limits<int>::quiet_NaN();
+  int m_cluster_sector = std::numeric_limits<int>::quiet_NaN();
+  int m_cluster_side = std::numeric_limits<int>::quiet_NaN();
   int m_cluster_size = std::numeric_limits<int>::quiet_NaN();
   int m_cluster_size_phi = std::numeric_limits<int>::quiet_NaN();
   int m_cluster_size_time = std::numeric_limits<int>::quiet_NaN();
@@ -128,11 +133,19 @@ class ClusterPhaseAnalysis : public SubsysReco
   float m_sim_truth_cluster_phi = std::numeric_limits<float>::quiet_NaN();
   float m_sim_truth_cluster_time = std::numeric_limits<float>::quiet_NaN();
 
+
   float m_sim_cluster_residual_rphi = std::numeric_limits<float>::quiet_NaN();
   float m_sim_cluster_residual_time = std::numeric_limits<float>::quiet_NaN();
+
+  float m_cluster_resolution_rphi = std::numeric_limits<float>::quiet_NaN();
+  float m_cluster_resolution_phi = std::numeric_limits<float>::quiet_NaN();
+
   std::map<TrkrDefs::cluskey, float> residual_rphi_map;
   std::map<TrkrDefs::cluskey, float> residual_time_map;
-    std::map<TrkrDefs::cluskey, float> m_truth_cluster_x_map;
+  std::map<TrkrDefs::cluskey, float> resolution_rphi_map;
+  std::map<TrkrDefs::cluskey, float> resolution_phi_map;
+  std::map<TrkrDefs::cluskey, float> resolution_time_map;
+  std::map<TrkrDefs::cluskey, float> m_truth_cluster_x_map;
   std::map<TrkrDefs::cluskey, float> m_truth_cluster_y_map;
   std::map<TrkrDefs::cluskey, float> m_truth_cluster_z_map;
 
@@ -161,8 +174,13 @@ class ClusterPhaseAnalysis : public SubsysReco
   int m_minTpcClusters = 30;
   bool m_ifzerofield = false;
   bool isSimulation = true;
+  int ntracksmax = 10000;
+  int ntracksmin = 0;
 
-
+  std::array<std::array<std::vector<int>,3>,2> good_sectors = {{
+    {{ {0,1,7,8,9}, {0,4,5,7,9}, {4,5,10} }},
+    {{ {0,1,3,6,8}, {0,2,4,6,7}, {0,3,4}  }}
+  }};
 
 };
 
