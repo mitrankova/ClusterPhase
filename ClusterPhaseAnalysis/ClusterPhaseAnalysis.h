@@ -140,6 +140,9 @@ class ClusterPhaseAnalysis : public SubsysReco
   float m_cluster_resolution_rphi = std::numeric_limits<float>::quiet_NaN();
   float m_cluster_resolution_phi = std::numeric_limits<float>::quiet_NaN();
 
+  float m_cluster_resolution_rphi_error = std::numeric_limits<float>::quiet_NaN();
+  float m_cluster_resolution_rphi_pull = std::numeric_limits<float>::quiet_NaN();
+
   std::map<TrkrDefs::cluskey, float> residual_rphi_map;
   std::map<TrkrDefs::cluskey, float> residual_time_map;
   std::map<TrkrDefs::cluskey, float> resolution_rphi_map;
@@ -148,6 +151,12 @@ class ClusterPhaseAnalysis : public SubsysReco
   std::map<TrkrDefs::cluskey, float> m_truth_cluster_x_map;
   std::map<TrkrDefs::cluskey, float> m_truth_cluster_y_map;
   std::map<TrkrDefs::cluskey, float> m_truth_cluster_z_map;
+  // Add these member variables
+  std::map<TrkrDefs::cluskey, float> resolution_rphi_error_map;
+  std::map<TrkrDefs::cluskey, float> resolution_rphi_pull_map;
+
+
+
 
   // Hit-level information ( vectors:   hits in that cluster)
   std::vector<uint32_t> m_hitkeys;
@@ -165,6 +174,40 @@ class ClusterPhaseAnalysis : public SubsysReco
   std::vector<float> m_hit_time;
 
 
+  // alarm flag for this cluster-entry
+  int m_phase_alarm = 0;
+
+  // optional: store the phase that triggered alarm (helps debugging)
+  float m_alarm_dNdPhase_phi  = NAN;
+  float m_alarm_dNdPhase_time = NAN;
+  int   m_alarm_size_phi      = 0;
+  int   m_alarm_size_time     = 0;
+
+  // alarm cluster position (copy of current cluster)
+  float m_alarm_cluster_x = NAN;
+  float m_alarm_cluster_y = NAN;
+  float m_alarm_cluster_z = NAN;
+  float m_alarm_cluster_r = NAN;
+  float m_alarm_cluster_phi = NAN;
+  float m_alarm_cluster_time = NAN;
+  int   m_alarm_cluster_layer = -1;
+  int   m_alarm_cluster_side  = -1;
+  int   m_alarm_cluster_sector = -1;
+
+  // alarm hits (copy of associated hits)
+  std::vector<uint32_t> m_alarm_hitkeys;
+  std::vector<int>      m_alarm_hit_side;
+  std::vector<int>      m_alarm_hit_layer;
+  std::vector<int>      m_alarm_hit_region;
+  std::vector<int>      m_alarm_hit_pad;
+  std::vector<int>      m_alarm_hit_tbin;
+  std::vector<int>      m_alarm_hit_adc;
+  std::vector<float>    m_alarm_hit_x;
+  std::vector<float>    m_alarm_hit_y;
+  std::vector<float>    m_alarm_hit_z;
+  std::vector<float>    m_alarm_hit_r;
+  std::vector<float>    m_alarm_hit_phi;
+  std::vector<float>    m_alarm_hit_time;
 
 
   

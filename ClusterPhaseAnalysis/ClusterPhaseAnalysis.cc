@@ -620,6 +620,8 @@ int ClusterPhaseAnalysis::Init(PHCompositeNode* /*topNode*/)
   m_tree->Branch("sim_cluster_residual_time", &m_sim_cluster_residual_time, "m_sim_cluster_residual_time/F");
   m_tree->Branch("cluster_resolution_rphi", &m_cluster_resolution_rphi, "m_cluster_resolution_rphi/F");
   m_tree->Branch("cluster_resolution_phi", &m_cluster_resolution_phi, "m_cluster_resolution_phi/F");
+  m_tree->Branch("cluster_resolution_rphi_error", &m_cluster_resolution_rphi_error, "m_cluster_resolution_rphi_error/F");
+  m_tree->Branch("cluster_resolution_rphi_pull", &m_cluster_resolution_rphi_pull, "m_cluster_resolution_rphi_pull/F");
 
 
 
@@ -637,6 +639,41 @@ int ClusterPhaseAnalysis::Init(PHCompositeNode* /*topNode*/)
   m_tree->Branch("hit_r", &m_hit_r);
   m_tree->Branch("hit_phi", &m_hit_phi);
   m_tree->Branch("hit_time", &m_hit_time);
+
+
+
+
+    m_tree->Branch("phase_alarm", &m_phase_alarm, "phase_alarm/I");
+
+  m_tree->Branch("alarm_dNdPhase_phi",  &m_alarm_dNdPhase_phi,  "alarm_dNdPhase_phi/F");
+  m_tree->Branch("alarm_dNdPhase_time", &m_alarm_dNdPhase_time, "alarm_dNdPhase_time/F");
+  m_tree->Branch("alarm_size_phi",      &m_alarm_size_phi,      "alarm_size_phi/I");
+  m_tree->Branch("alarm_size_time",     &m_alarm_size_time,     "alarm_size_time/I");
+
+  m_tree->Branch("alarm_cluster_x",     &m_alarm_cluster_x,     "alarm_cluster_x/F");
+  m_tree->Branch("alarm_cluster_y",     &m_alarm_cluster_y,     "alarm_cluster_y/F");
+  m_tree->Branch("alarm_cluster_z",     &m_alarm_cluster_z,     "alarm_cluster_z/F");
+  m_tree->Branch("alarm_cluster_r",     &m_alarm_cluster_r,     "alarm_cluster_r/F");
+  m_tree->Branch("alarm_cluster_phi",   &m_alarm_cluster_phi,   "alarm_cluster_phi/F");
+  m_tree->Branch("alarm_cluster_time",  &m_alarm_cluster_time,  "alarm_cluster_time/F");
+  m_tree->Branch("alarm_cluster_layer", &m_alarm_cluster_layer, "alarm_cluster_layer/I");
+  m_tree->Branch("alarm_cluster_side",  &m_alarm_cluster_side,  "alarm_cluster_side/I");
+  m_tree->Branch("alarm_cluster_sector",&m_alarm_cluster_sector,"alarm_cluster_sector/I");
+
+  m_tree->Branch("alarm_hit_keys",  &m_alarm_hitkeys);
+  m_tree->Branch("alarm_hit_side",  &m_alarm_hit_side);
+  m_tree->Branch("alarm_hit_layer", &m_alarm_hit_layer);
+  m_tree->Branch("alarm_hit_region",&m_alarm_hit_region);
+  m_tree->Branch("alarm_hit_pad",   &m_alarm_hit_pad);
+  m_tree->Branch("alarm_hit_tbin",  &m_alarm_hit_tbin);
+  m_tree->Branch("alarm_hit_adc",   &m_alarm_hit_adc);
+  m_tree->Branch("alarm_hit_x",     &m_alarm_hit_x);
+  m_tree->Branch("alarm_hit_y",     &m_alarm_hit_y);
+  m_tree->Branch("alarm_hit_z",     &m_alarm_hit_z);
+  m_tree->Branch("alarm_hit_r",     &m_alarm_hit_r);
+  m_tree->Branch("alarm_hit_phi",   &m_alarm_hit_phi);
+  m_tree->Branch("alarm_hit_time",  &m_alarm_hit_time);
+
 
 
   m_event = 0;
@@ -808,7 +845,10 @@ void ClusterPhaseAnalysis::FillClusters(SvtxTrack* track)
     
       int adc = cluster->getAdc();
       int max_adc = cluster->getMaxAdc();
-      float phi_err = cluster->getPhiError();
+
+      auto para_errors = ClusterErrorPara::get_clusterv5_modified_error(cluster, r, cluskey);
+      //float phi_err = cluster->getPhiError();
+      double phi_err = sqrt(para_errors.first);
      
     
       unsigned int layer = TrkrDefs::getLayer(cluskey);
@@ -829,7 +869,7 @@ void ClusterPhaseAnalysis::FillClusters(SvtxTrack* track)
       m_cluster_sector = sector;
       m_cluster_e = phi_err;
 
-
+     
       if(isSimulation){
         FindTruthClusters(cluskey, glob);
       }
@@ -846,18 +886,25 @@ void ClusterPhaseAnalysis::FillClusters(SvtxTrack* track)
       m_truth_cluster_x = m_truth_cluster_x_map.count(cluskey) ? m_truth_cluster_x_map[cluskey] : NAN;
       m_truth_cluster_y = m_truth_cluster_y_map.count(cluskey) ? m_truth_cluster_y_map[cluskey] : NAN;
       m_truth_cluster_z = m_truth_cluster_z_map.count(cluskey) ? m_truth_cluster_z_map[cluskey] : NAN;
-      std::cout<<"  !!!!!! cluster "<<cluskey<<" m_cluster_x "<<m_cluster_x<<" m_cluster_y "<<m_cluster_y<<" m_cluster_z "<<m_cluster_z<<std::endl;
+      std::cout<<"  !!!!!! cluster "<<cluskey<<" m_cluster_x "<<m_cluster_x<<" m_cluster_y "<<m_cluster_y<<" m_cluster_z "<<m_cluster_z<<" m_cluster_e "<<m_cluster_e<<" m_cluster_e_simple "<<m_cluster_e_simple<<std::endl;
       std::cout<<"  !!!!!! cluster "<<cluskey<<" m_truth_cluster_x "<<m_truth_cluster_x<<" m_truth_cluster_y "<<m_truth_cluster_y<<" m_truth_cluster_z "<<m_truth_cluster_z<<"   -- m_cluster_residual_rphi "<<m_cluster_residual_rphi<<std::endl;
-      std::cout<<"FILL TREE"<<std::endl;
+
 
 
       m_cluster_resolution_rphi = resolution_rphi_map.count(cluskey) ? resolution_rphi_map[cluskey] : NAN;
       m_cluster_resolution_phi = resolution_phi_map.count(cluskey) ? resolution_phi_map[cluskey] : NAN;
+      m_cluster_resolution_rphi_error = resolution_rphi_error_map.count(cluskey) ? resolution_rphi_error_map[cluskey] : NAN;
+      m_cluster_resolution_rphi_pull = resolution_rphi_pull_map.count(cluskey) ? resolution_rphi_pull_map[cluskey] : NAN;
 
       std::cout << "  !!!!!! cluster " << cluskey 
                 << " resolution_rphi " << m_cluster_resolution_rphi 
-                << " resolution_phi " << m_cluster_resolution_phi << std::endl;
+                << " resolution_phi " << m_cluster_resolution_phi 
+                << " resolution_rphi_error " << m_cluster_resolution_rphi_error
+                << " resolution_rphi_pull " << m_cluster_resolution_rphi_pull
+                << std::endl;
 
+
+      std::cout<<"FILL TREE"<<std::endl;
       m_tree->Fill();
   }
 }
@@ -1072,22 +1119,40 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
   int max_adc_sum_by_pad = 0, max_adc_sum_by_tbin =0;
   //int  max_adc_sum_by_pad_pad = -1, max_adc_sum_by_tbin_tbin=-1;
   float max_adc_phi_bin = 0, max_adc_time_bin = 0;
-  int iphi2_sum = 0, iphi_sum=0;
-    int adc_sum = 0;
+  double iphi2_sum = 0, iphi_sum=0;
+  double adc_sum = 0;
+
+  int phibinlo =  999999;
+  int phibinhi = -999999;
+    
   for (size_t i = 0; i < N; ++i) 
   {
-    iphi_sum += m_hit_pad[i] * m_hit_adc[i];
-    iphi2_sum += square(m_hit_pad[i]) * m_hit_adc[i];
-    adc_sum += m_hit_adc[i];
+    const double w = m_hit_adc[i];
+    const int pad  = m_hit_pad[i];   // make sure this is the same "phi bin index" as used elsewhere
+
+    iphi_sum  += pad * w;
+    iphi2_sum += double(pad) * double(pad) * w;
+    adc_sum   += w;
+
+    if (pad < phibinlo) phibinlo = pad;
+    if (pad > phibinhi) phibinhi = pad;
+
     sum_by_tbin[m_hit_time[i]] += static_cast<double>(m_hit_adc[i]);
     sum_by_pad[m_hit_phi[i]] += static_cast<double>(m_hit_adc[i]);
   // std::cout<<"   hit phi "<<m_hit_phi[i]<<" time "<<m_hit_time[i]<<" adc "<<m_hit_adc[i]<<std::endl;
   }
 
-  float  clusiphi = iphi_sum / adc_sum;
-  double phi_cov = (iphi2_sum / adc_sum - square(clusiphi)) * pow(phiwidth, 2);
-  double phi_err = radius*std::sqrt(phi_cov / (adc_sum * 0.14));
-  m_cluster_e_simple = phi_err;
+
+  double clusiphi = double(iphi_sum) / double(adc_sum);
+  const double dphi   = phiwidth;   // geoLayer->get_phistep()
+  const double r      = radius;
+  const double phi_cov = (iphi2_sum / adc_sum - clusiphi*clusiphi) * (dphi*dphi);
+  double phi_err_square = (r*r) * phi_cov / (adc_sum * 0.14);
+
+  if (!(std::isfinite(phi_err_square)) || phi_err_square < 0.0) phi_err_square = 0.0;
+
+  const double rphi_err = std::sqrt(phi_err_square);
+  m_cluster_e_simple = rphi_err;
 
   for (const auto& entry : sum_by_pad) 
   {
@@ -1123,7 +1188,7 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
   m_cluster_size_time = sum_by_tbin.size();
   m_cluster_phase_phi =dNdPhase_phi;
   m_cluster_phase_time = dNdPhase_time;
-  if ((m_cluster_size_phi==2 && std::fabs(dNdPhase_phi)>0.5)||(m_cluster_size_phi==3 &&  std::fabs(dNdPhase_phi)>1)||(m_cluster_size_phi==4 &&  std::fabs(dNdPhase_phi)>1.5)||(m_cluster_size_phi==5 &&  std::fabs(dNdPhase_phi)>2))
+  /*if ((m_cluster_size_phi==2 && std::fabs(dNdPhase_phi)>0.5)||(m_cluster_size_phi==3 &&  std::fabs(dNdPhase_phi)>1)||(m_cluster_size_phi==4 &&  std::fabs(dNdPhase_phi)>1.5)||(m_cluster_size_phi==5 &&  std::fabs(dNdPhase_phi)>2))
   {
         m_cluster_phase_phi =0;
         m_cluster_phase_time =0;
@@ -1134,7 +1199,69 @@ void ClusterPhaseAnalysis::CalculatePhase(uint64_t ckey)
         {
             std::cout<<"   hit pad "<<m_hit_pad[i]<<" time bin "<<m_hit_tbin[i]<<" adc "<<m_hit_adc[i]<<";   hit phi "<<m_hit_phi[i]<<" time "<<m_hit_time[i]<<std::endl;
         }
+  }*/
+
+
+  const bool alarm =
+  (m_cluster_size_phi==2 && std::fabs(dNdPhase_phi)>0.5f) ||
+  (m_cluster_size_phi==3 && std::fabs(dNdPhase_phi)>1.0f) ||
+  (m_cluster_size_phi==4 && std::fabs(dNdPhase_phi)>1.5f) ||
+  (m_cluster_size_phi==5 && std::fabs(dNdPhase_phi)>2.0f);
+
+  if (alarm)
+  {
+    m_phase_alarm = 1;
+
+    // store what triggered it
+    m_alarm_dNdPhase_phi  = dNdPhase_phi;
+    m_alarm_dNdPhase_time = dNdPhase_time;
+    m_alarm_size_phi      = m_cluster_size_phi;
+    m_alarm_size_time     = m_cluster_size_time;
+
+    // copy cluster position (already set in FillClusters before CalculatePhase)
+    m_alarm_cluster_x     = m_cluster_x;
+    m_alarm_cluster_y     = m_cluster_y;
+    m_alarm_cluster_z     = m_cluster_z;
+    m_alarm_cluster_r     = m_cluster_r;
+    m_alarm_cluster_phi   = m_cluster_phi;
+    m_alarm_cluster_time  = m_cluster_time;
+    m_alarm_cluster_layer = m_cluster_layer;
+    m_alarm_cluster_side  = m_cluster_side;
+    m_alarm_cluster_sector= m_cluster_sector;
+
+    // copy associated hits
+    m_alarm_hitkeys  = m_hitkeys;
+    m_alarm_hit_side = m_hit_side;
+    m_alarm_hit_layer= m_hit_layer;
+    m_alarm_hit_region = m_hit_region;
+    m_alarm_hit_pad  = m_hit_pad;
+    m_alarm_hit_tbin = m_hit_tbin;
+    m_alarm_hit_adc  = m_hit_adc;
+    m_alarm_hit_x    = m_hit_x;
+    m_alarm_hit_y    = m_hit_y;
+    m_alarm_hit_z    = m_hit_z;
+    m_alarm_hit_r    = m_hit_r;
+    m_alarm_hit_phi  = m_hit_phi;
+    m_alarm_hit_time = m_hit_time;
+
+    std::cout << "ClusterPhaseAnalysis::CalculatePhase -- ALARM!\n";
+    for (size_t i = 0; i < N; ++i)
+    {
+      std::cout << "   hit pad " << m_hit_pad[i]
+                << " time bin "  << m_hit_tbin[i]
+                << " adc "       << m_hit_adc[i]
+                << "; hit phi "  << m_hit_phi[i]
+                << " time "      << m_hit_time[i]
+                << std::endl;
+    }
+
+    // OPTIONAL safety: make main phase unusable but still keep cluster/hits
+    // m_cluster_phase_phi  = std::numeric_limits<float>::quiet_NaN();
+    // m_cluster_phase_time = std::numeric_limits<float>::quiet_NaN();
   }
+
+
+
  if (Verbosity())
   {
       std::cout << "ClusterPhaseAnalysis::CalculatePhase -- Cluster phi size = "<< m_cluster_size_phi <<"  Cluster t size = "<<m_cluster_size_time<< std::endl;
@@ -1397,11 +1524,9 @@ void ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors(SvtxTrack* track)
 {
   if (!track || !geometry || !clustermap || !tpcGeom) return;
 
-  // --- constants for region definition ---
   const unsigned int first_tpc_layer = 7;
   const unsigned int last_tpc_layer  = 54;
 
-  // --- collect all clusters for this track, organized by layer ---
   std::map<unsigned int, TrkrDefs::cluskey> clustersByLayer;
   
   const std::vector<TrkrDefs::cluskey> clusterKeys = get_cluster_keys(track);
@@ -1411,114 +1536,147 @@ void ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors(SvtxTrack* track)
     const TrkrDefs::cluskey ckey = clusterKeys[i];
     const unsigned int layer = TrkrDefs::getLayer(ckey);
 
-    // only TPC layers
     if (layer == 7 || layer == 22 || layer == 23 || layer == 38 || layer == 39 || layer == 54) continue;
     if (layer < first_tpc_layer || layer > last_tpc_layer) continue;
 
     TrkrCluster* c = clustermap->findCluster(ckey);
     if (!c) continue;
-    
     if (c->getEdge() != 0) continue;
 
-    clustersByLayer[layer] = ckey;  // Only one cluster per layer
+    clustersByLayer[layer] = ckey;
   }
 
   if (clustersByLayer.empty()) return;
 
-  // --- For each cluster, fit line through neighbors in layer-1 and layer+1 ---
   for (auto& layerPair : clustersByLayer)
   {
     const unsigned int currentLayer = layerPair.first;
     const TrkrDefs::cluskey ckey = layerPair.second;
 
-    // Get neighboring layers
     const unsigned int layerMinus1 = currentLayer - 1;
     const unsigned int layerPlus1  = currentLayer + 1;
 
-    // Check if neighboring layers exist and have clusters
     auto itMinus1 = clustersByLayer.find(layerMinus1);
     auto itPlus1  = clustersByLayer.find(layerPlus1);
 
     if (itMinus1 == clustersByLayer.end() || itPlus1 == clustersByLayer.end())
     {
-      std::cout << "ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors -- Layer " << currentLayer
-                << " missing neighbors, skipping" << std::endl;
       continue;
     }
 
-    // Get the current cluster position
+    // ============================================================
+    // Get GEOMETRY radii (precise, no uncertainty)
+    // ============================================================
+    PHG4TpcGeom* geoCurrent = tpcGeom->GetLayerCellGeom(currentLayer);
+    PHG4TpcGeom* geoMinus1 = tpcGeom->GetLayerCellGeom(layerMinus1);
+    PHG4TpcGeom* geoPlus1 = tpcGeom->GetLayerCellGeom(layerPlus1);
+    
+    if (!geoCurrent || !geoMinus1 || !geoPlus1) continue;
+    
+    const double rCurrent = geoCurrent->get_radius();  // PRECISE from geometry
+    const double rMinus1 = geoMinus1->get_radius();    // PRECISE from geometry
+    const double rPlus1 = geoPlus1->get_radius();      // PRECISE from geometry
+
+    // ============================================================
+    // Get measured PHI values and their uncertainties
+    // ============================================================
     TrkrCluster* c = clustermap->findCluster(ckey);
     if (!c) continue;
-
+    
     const Acts::Vector3 gCurrent = geometry->getGlobalPosition(ckey, c);
-    const double xCurrent = gCurrent.x();
-    const double yCurrent = gCurrent.y();
-   // const double zCurrent = gCurrent.z();
-    const double rCurrent = std::sqrt(xCurrent*xCurrent + yCurrent*yCurrent);
-    const double phiCurrent = std::atan2(yCurrent, xCurrent);
+    const double phiCurrent = std::atan2(gCurrent.y(), gCurrent.x());
+    
+    auto para_errors = ClusterErrorPara::get_clusterv5_modified_error(c, rCurrent, ckey);
+    const double phiErrCurrent = sqrt(para_errors.first);  // radians
+    const double rphiErrCurrent = rCurrent * phiErrCurrent;  // cm
 
-    // Get neighbor cluster from layer-1
+    // Layer-1
     TrkrCluster* cMinus1 = clustermap->findCluster(itMinus1->second);
     if (!cMinus1) continue;
     
     const Acts::Vector3 gMinus1 = geometry->getGlobalPosition(itMinus1->second, cMinus1);
-    const double xMinus1 = gMinus1.x();
-    const double yMinus1 = gMinus1.y();
-    const double rMinus1 = std::sqrt(xMinus1*xMinus1 + yMinus1*yMinus1);
-    double phiMinus1 = std::atan2(yMinus1, xMinus1);
+    double phiMinus1 = std::atan2(gMinus1.y(), gMinus1.x());
+    
+    auto para_errors_Minus1 = ClusterErrorPara::get_clusterv5_modified_error(cMinus1, rMinus1, itMinus1->second);
+    const double phiErrMinus1 = sqrt(para_errors_Minus1.first);  // radians
+    const double sigma2Minus1 = phiErrMinus1 * phiErrMinus1;     // rad²
 
-    // Get neighbor cluster from layer+1
+    // Layer+1
     TrkrCluster* cPlus1 = clustermap->findCluster(itPlus1->second);
     if (!cPlus1) continue;
     
     const Acts::Vector3 gPlus1 = geometry->getGlobalPosition(itPlus1->second, cPlus1);
-    const double xPlus1 = gPlus1.x();
-    const double yPlus1 = gPlus1.y();
-    const double rPlus1 = std::sqrt(xPlus1*xPlus1 + yPlus1*yPlus1);
-    double phiPlus1 = std::atan2(yPlus1, xPlus1);
+    double phiPlus1 = std::atan2(gPlus1.y(), gPlus1.x());
+    
+    auto para_errors_Plus1 = ClusterErrorPara::get_clusterv5_modified_error(cPlus1, rPlus1, itPlus1->second);
+    const double phiErrPlus1 = sqrt(para_errors_Plus1.first);  // radians
+    const double sigma2Plus1 = phiErrPlus1 * phiErrPlus1;      // rad²
 
-    // Handle phi wrapping around 2π for consistency
+    // Handle phi wrapping
     phiMinus1 = phiCurrent + std::remainder(phiMinus1 - phiCurrent, 2.0 * M_PI);
     phiPlus1  = phiCurrent + std::remainder(phiPlus1 - phiCurrent, 2.0 * M_PI);
 
-    // Linear fit with just 2 points: phi = a + b*r
-    // slope b = (phi2 - phi1) / (r2 - r1)
-    // intercept a = phi1 - b*r1
-    double denom = rPlus1 - rMinus1;
-    if (std::fabs(denom) < 1e-12)
-    {
-      std::cout << "ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors -- ckey " << ckey
-                << " layer " << currentLayer << " zero denominator in linear fit" << std::endl;
-      continue;
-    }
+    // ============================================================
+    // LINEAR INTERPOLATION with known r values
+    // φ(r) = a + b·r, where r is EXACT
+    // ============================================================
+    
+    // The slope is exact (no uncertainty in r):
+    const double slope = (phiPlus1 - phiMinus1) / (rPlus1 - rMinus1);
+    
+    // Intercept
+    const double intercept = phiMinus1 - slope * rMinus1;
+    
+    // Predicted phi at current layer
+    const double phiFit = intercept + slope * rCurrent;
+    
+    // Residual
+    const double dphi = std::remainder(phiCurrent - phiFit, 2.0 * M_PI);
+    const double residual_rphi = rCurrent * dphi;
 
-    double slope = (phiPlus1 - phiMinus1) / denom;
-    double intercept = phiMinus1 - slope * rMinus1;
-
-    // Calculate fitted phi at current r
-    double phiFit = intercept + slope * rCurrent;
-
-    // Calculate residual
-    double dphi = std::remainder(phiCurrent - phiFit, 2.0 * M_PI);
-    double residual_rphi = rCurrent * dphi;
+    // ============================================================
+    // ERROR PROPAGATION (simplified, since r is exact)
+    // ============================================================
+    
+    // Fractional distance from layer-1 to current layer
+    const double alpha = (rCurrent - rMinus1) / (rPlus1 - rMinus1);
+    
+    // The prediction is: φ_fit = φ₁ + α(φ₂ - φ₁) = (1-α)φ₁ + α·φ₂
+    // Variance of prediction (uncorrelated errors):
+    const double var_phiFit = (1.0 - alpha) * (1.0 - alpha) * sigma2Minus1 
+                            + alpha * alpha * sigma2Plus1;
+    
+    const double sigma_phiFit = std::sqrt(var_phiFit);  // radians
+    const double sigma_rphiFit = rCurrent * sigma_phiFit;  // cm
+    
+    // Total uncertainty
+    const double total_sigma_rphi = std::sqrt(rphiErrCurrent * rphiErrCurrent 
+                                            + sigma_rphiFit * sigma_rphiFit);
+    
+    // Pull
+    const double pull_rphi = residual_rphi / std::max(total_sigma_rphi, 1e-12);
 
     // Store results
-    //m_truth_cluster_x_map[ckey] = static_cast<float>(rCurrent * std::cos(phiFit));
-    //m_truth_cluster_y_map[ckey] = static_cast<float>(rCurrent * std::sin(phiFit));
-    //m_truth_cluster_z_map[ckey] = static_cast<float>(zCurrent);
-    
     resolution_rphi_map[ckey] = static_cast<float>(residual_rphi);
     resolution_phi_map[ckey] = static_cast<float>(dphi);
-   // resolution_time_map[ckey] = std::numeric_limits<float>::quiet_NaN();
+    resolution_rphi_error_map[ckey] = static_cast<float>(total_sigma_rphi);
+    resolution_rphi_pull_map[ckey] = static_cast<float>(pull_rphi);
 
-    std::cout << "ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors -- ckey " << ckey
-              << " layer " << currentLayer
-              << " rCurrent " << rCurrent << " phiCurrent " << phiCurrent
-              << " layer-1: r=" << rMinus1 << " phi=" << phiMinus1
-              << " layer+1: r=" << rPlus1 << " phi=" << phiPlus1
-              << " phiFit " << phiFit
-              << " residual_rphi " << residual_rphi
-              << std::endl;
+    if (Verbosity() > 0)
+    {
+      std::cout << "ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors -- ckey " << ckey
+                << " layer " << currentLayer
+                << "\n  Radii (EXACT): r-1=" << rMinus1 << " r=" << rCurrent << " r+1=" << rPlus1
+                << "\n  Phi measured: " << phiCurrent << " ± " << phiErrCurrent << " rad"
+                << "\n  Neighbors: phi-1=" << phiMinus1 << " ± " << phiErrMinus1 
+                << ", phi+1=" << phiPlus1 << " ± " << phiErrPlus1
+                << "\n  Fit: slope=" << slope << " intercept=" << intercept
+                << "\n  Predicted: phiFit=" << phiFit << " ± " << sigma_phiFit << " rad"
+                << "\n  Residual: dphi=" << dphi << " rad = " << residual_rphi << " cm"
+                << "\n  Total error: " << total_sigma_rphi << " cm"
+                << "\n  Pull: " << pull_rphi
+                << std::endl;
+    }
   }
 }
 //_______________________________________________________________________________
@@ -1581,6 +1739,37 @@ void ClusterPhaseAnalysis::reset_tree_vars()
         m_hit_r.clear();
         m_hit_phi.clear();
         m_hit_time.clear();
+
+        m_phase_alarm = 0;
+
+        m_alarm_dNdPhase_phi  = std::numeric_limits<float>::quiet_NaN();
+        m_alarm_dNdPhase_time = std::numeric_limits<float>::quiet_NaN();
+        m_alarm_size_phi = 0;
+        m_alarm_size_time = 0;
+
+        m_alarm_cluster_x = std::numeric_limits<float>::quiet_NaN();
+        m_alarm_cluster_y = std::numeric_limits<float>::quiet_NaN();
+        m_alarm_cluster_z = std::numeric_limits<float>::quiet_NaN();
+        m_alarm_cluster_r = std::numeric_limits<float>::quiet_NaN();
+        m_alarm_cluster_phi = std::numeric_limits<float>::quiet_NaN();
+        m_alarm_cluster_time = std::numeric_limits<float>::quiet_NaN();
+        m_alarm_cluster_layer = -1;
+        m_alarm_cluster_side  = -1;
+        m_alarm_cluster_sector = -1;
+
+        m_alarm_hitkeys.clear();
+        m_alarm_hit_side.clear();
+        m_alarm_hit_layer.clear();
+        m_alarm_hit_region.clear();
+        m_alarm_hit_pad.clear();
+        m_alarm_hit_tbin.clear();
+        m_alarm_hit_adc.clear();
+        m_alarm_hit_x.clear();
+        m_alarm_hit_y.clear();
+        m_alarm_hit_z.clear();
+        m_alarm_hit_r.clear();
+        m_alarm_hit_phi.clear();
+        m_alarm_hit_time.clear();
 
 
 }
