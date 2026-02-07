@@ -748,7 +748,7 @@ void ClusterPhaseAnalysis::processTracks()
         {
            // if(!isSimulation) 
             ComputeFitTruthAtLayer( track);
-            ComputeLinearFitFromNeighbors(track);  
+            ComputeCircularFitFromNeighbors(track);  
             FillClusters(track);
             
 
@@ -1517,176 +1517,8 @@ void ClusterPhaseAnalysis::ComputeFitTruthAtLayer(SvtxTrack* track)
   }
 }
 
-
-
 //_____________________________________________________________________________________________
-// Helpers (put these in the same .cc file, above the method; C++98-friendly)
-
-static double unwrapNear(double phi, double ref)
-{
-  return ref + std::remainder(phi - ref, 2.0 * M_PI);
-}
-
-static bool circleCentersFromTwoPointsFixedR(
-    double x1, double y1, double x2, double y2, double R,
-    double& cxA, double& cyA, double& cxB, double& cyB)
-{
-  const double dx = x2 - x1;
-  const double dy = y2 - y1;
-  const double d2 = dx*dx + dy*dy;
-  const double d  = std::sqrt(d2);
-
-  if (d < 1e-12) return false;
-  if (d > 2.0*R) return false;  // no solution
-
-  const double mx = 0.5*(x1 + x2);
-  const double my = 0.5*(y1 + y2);
-
-  const double half = 0.5*d;
-  const double h2   = R*R - half*half;
-  if (h2 < 0.0) return false;
-
-  const double h = std::sqrt(std::max(0.0, h2));
-
-  // unit perpendicular to chord
-  const double ux = -dy / d;
-  const double uy =  dx / d;
-
-  cxA = mx + h*ux;  cyA = my + h*uy;
-  cxB = mx - h*ux;  cyB = my - h*uy;
-  return true;
-}
-
-static bool intersectCircleCircle(
-    double x0, double y0, double r0,
-    double x1, double y1, double r1,
-    double& xa, double& ya, double& xb, double& yb)
-{
-  const double dx = x1 - x0;
-  const double dy = y1 - y0;
-  const double d  = std::sqrt(dx*dx + dy*dy);
-
-  if (d < 1e-12) return false;
-  if (d > r0 + r1) return false;                 // separate circles
-  if (d < std::fabs(r0 - r1)) return false;      // one inside the other
-
-  const double a  = (r0*r0 - r1*r1 + d*d) / (2.0*d);
-  const double h2 = r0*r0 - a*a;
-  if (h2 < 0.0) return false;
-
-  const double h  = std::sqrt(std::max(0.0, h2));
-
-  const double xm = x0 + a*dx/d;
-  const double ym = y0 + a*dy/d;
-
-  const double rx = -dy/d;
-  const double ry =  dx/d;
-
-  xa = xm + h*rx;  ya = ym + h*ry;
-  xb = xm - h*rx;  yb = ym - h*ry;
-  return true;
-}
-
-// Compute predicted phi at rC for a fixed curvature radius Rtrack,
-// using only neighbor radii/phis (neighbors are assumed on their layer radii).
-static bool predictPhiFromNeighborsFixedCurvature(
-    double rM, double phiM,   // layer-1
-    double rP, double phiP,   // layer+1
-    double rC, double phiRef, // current radius + unwrap reference (measured phi at current)
-    double Rtrack,
-    double phiWindowMargin,
-    double& phiFitOut,
-    double* cxBestOut, double* cyBestOut,
-    double* xBestOut,  double* yBestOut)
-{
-  // Build neighbor points on ideal radii
-  const double xM = rM * std::cos(phiM);
-  const double yM = rM * std::sin(phiM);
-  const double xP = rP * std::cos(phiP);
-  const double yP = rP * std::sin(phiP);
-
-  // Two possible circle centers for fixed Rtrack through Pm,Pp
-  double cx1=0, cy1=0, cx2=0, cy2=0;
-  if (!circleCentersFromTwoPointsFixedR(xM, yM, xP, yP, Rtrack, cx1, cy1, cx2, cy2))
-  {
-    return false;
-  }
-
-  // Neighbor phi window (already unwrapped before calling here)
-  const double lo0 = std::min(phiM, phiP);
-  const double hi0 = std::max(phiM, phiP);
-  const double lo  = lo0 - phiWindowMargin;
-  const double hi  = hi0 + phiWindowMargin;
-
-  bool haveBest = false;
-  double bestScore = 1e99;
-
-  double bestPhi = 0.0, bestCx = 0.0, bestCy = 0.0, bestX = 0.0, bestY = 0.0;
-
-  for (int ic = 0; ic < 2; ++ic)
-  {
-    const double cx = (ic == 0 ? cx1 : cx2);
-    const double cy = (ic == 0 ? cy1 : cy2);
-
-    // Intersect track circle (cx,cy,Rtrack) with radius circle (0,0,rC)
-    double xa, ya, xb, yb;
-    if (!intersectCircleCircle(0.0, 0.0, rC, cx, cy, Rtrack, xa, ya, xb, yb))
-    {
-      continue;
-    }
-
-    // Candidate phis
-    double phiA = unwrapNear(std::atan2(ya, xa), phiRef);
-    double phiB = unwrapNear(std::atan2(yb, xb), phiRef);
-
-    const bool Ain = (phiA >= lo && phiA <= hi);
-    const bool Bin = (phiB >= lo && phiB <= hi);
-
-    // score: close to measured phiRef, penalize if outside neighbor window
-    double scoreA = std::fabs(phiA - phiRef) + (Ain ? 0.0 : 10.0);
-    double scoreB = std::fabs(phiB - phiRef) + (Bin ? 0.0 : 10.0);
-
-    double phiCand, xCand, yCand, scoreCand;
-    if (scoreA < scoreB)
-    {
-      phiCand   = phiA;
-      xCand     = xa;
-      yCand     = ya;
-      scoreCand = scoreA;
-    }
-    else
-    {
-      phiCand   = phiB;
-      xCand     = xb;
-      yCand     = yb;
-      scoreCand = scoreB;
-    }
-
-    if (scoreCand < bestScore)
-    {
-      bestScore = scoreCand;
-      bestPhi   = phiCand;
-      bestCx    = cx;
-      bestCy    = cy;
-      bestX     = xCand;
-      bestY     = yCand;
-      haveBest  = true;
-    }
-  }
-
-  if (!haveBest) return false;
-
-  phiFitOut = bestPhi;
-  if (cxBestOut) *cxBestOut = bestCx;
-  if (cyBestOut) *cyBestOut = bestCy;
-  if (xBestOut)  *xBestOut  = bestX;
-  if (yBestOut)  *yBestOut  = bestY;
-
-  return true;
-}
-
-//_____________________________________________________________________________________________
-void ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors(SvtxTrack* track)
+void ClusterPhaseAnalysis::ComputeCircularFitFromNeighbors(SvtxTrack* track)
 {
   if (!track || !geometry || !clustermap || !tpcGeom) return;
 
@@ -1694,7 +1526,7 @@ void ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors(SvtxTrack* track)
   const unsigned int last_tpc_layer  = 54;
 
   std::map<unsigned int, TrkrDefs::cluskey> clustersByLayer;
-
+  
   const std::vector<TrkrDefs::cluskey> clusterKeys = get_cluster_keys(track);
 
   for (size_t i = 0; i < clusterKeys.size(); ++i)
@@ -1702,7 +1534,6 @@ void ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors(SvtxTrack* track)
     const TrkrDefs::cluskey ckey = clusterKeys[i];
     const unsigned int layer = TrkrDefs::getLayer(ckey);
 
-    // skip known boundary layers
     if (layer == 7 || layer == 22 || layer == 23 || layer == 38 || layer == 39 || layer == 54) continue;
     if (layer < first_tpc_layer || layer > last_tpc_layer) continue;
 
@@ -1715,215 +1546,280 @@ void ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors(SvtxTrack* track)
 
   if (clustersByLayer.empty()) return;
 
-  // Track curvature radius from pT and B=1.4T (R in cm)
-  const double B = 1.4; // Tesla
-  const double pt = std::fabs(track->get_pt()); // GeV/c
-  const double qabs = (track->get_charge() == 0 ? 1.0 : std::fabs(track->get_charge()));
-  const double k = 0.299792458; // GeV/(c*T*m)
-
-  // guard against pt ~ 0
-  if (pt < 1e-6) return;
-
-  const double Rtrack = 100.0 * pt / (k * qabs * B); // cm
-
-  for (std::map<unsigned int, TrkrDefs::cluskey>::const_iterator it = clustersByLayer.begin();
-       it != clustersByLayer.end(); ++it)
+  // Get track curvature for circular fit
+  // κ = q/(pT·c) × B, with c=1 in natural units, B in Tesla
+  const double charge = track->get_charge();
+  const double pt = track->get_pt();
+  const double B_field = 1.4; // Tesla - adjust to your actual field strength
+  
+  double kappa = 0.0;
+  if (std::abs(pt) > 1e-6)
   {
-    const unsigned int currentLayer = it->first;
-    const TrkrDefs::cluskey ckey = it->second;
+    kappa = charge * 0.3 * B_field / pt; // 0.3 is the conversion factor (GeV/c)/(T·cm)
+  }
+
+  for (auto& layerPair : clustersByLayer)
+  {
+    const unsigned int currentLayer = layerPair.first;
+    const TrkrDefs::cluskey ckey = layerPair.second;
 
     const unsigned int layerMinus1 = currentLayer - 1;
     const unsigned int layerPlus1  = currentLayer + 1;
 
-    std::map<unsigned int, TrkrDefs::cluskey>::const_iterator itMinus1 = clustersByLayer.find(layerMinus1);
-    std::map<unsigned int, TrkrDefs::cluskey>::const_iterator itPlus1  = clustersByLayer.find(layerPlus1);
+    auto itMinus1 = clustersByLayer.find(layerMinus1);
+    auto itPlus1  = clustersByLayer.find(layerPlus1);
 
-    if (itMinus1 == clustersByLayer.end() || itPlus1 == clustersByLayer.end()) continue;
-
-    // ============================================================
-    // Geometry radii (exact)
-    // ============================================================
-    PHG4TpcGeom* geoCurrent = tpcGeom->GetLayerCellGeom(currentLayer);
-    PHG4TpcGeom* geoMinus1  = tpcGeom->GetLayerCellGeom(layerMinus1);
-    PHG4TpcGeom* geoPlus1   = tpcGeom->GetLayerCellGeom(layerPlus1);
-
-    if (!geoCurrent || !geoMinus1 || !geoPlus1) continue;
-
-    const double rCurrent = geoCurrent->get_radius();
-    const double rMinus1  = geoMinus1->get_radius();
-    const double rPlus1   = geoPlus1->get_radius();
-
-    // ============================================================
-    // Measured positions/phis
-    // ============================================================
-    TrkrCluster* c = clustermap->findCluster(ckey);
-    if (!c) continue;
-    const Acts::Vector3 gCurrent = geometry->getGlobalPosition(ckey, c);
-    const double phiCurrent_raw = std::atan2(gCurrent.y(), gCurrent.x());
-
-    // current phi uncertainty
-    std::pair<double,double> para_errors = ClusterErrorPara::get_clusterv5_modified_error(c, rCurrent, ckey);
-    const double phiErrCurrent = std::sqrt(std::max(0.0, para_errors.first)); // rad
-    const double rphiErrCurrent = rCurrent * phiErrCurrent; // cm
-
-    // layer-1
-    TrkrCluster* cMinus1 = clustermap->findCluster(itMinus1->second);
-    if (!cMinus1) continue;
-    const Acts::Vector3 gMinus1 = geometry->getGlobalPosition(itMinus1->second, cMinus1);
-    double phiMinus1_raw = std::atan2(gMinus1.y(), gMinus1.x());
-
-    std::pair<double,double> para_errors_M = ClusterErrorPara::get_clusterv5_modified_error(cMinus1, rMinus1, itMinus1->second);
-    const double phiErrMinus1 = std::sqrt(std::max(0.0, para_errors_M.first)); // rad
-    const double sigma2Minus1 = phiErrMinus1 * phiErrMinus1;
-
-    // layer+1
-    TrkrCluster* cPlus1 = clustermap->findCluster(itPlus1->second);
-    if (!cPlus1) continue;
-    const Acts::Vector3 gPlus1 = geometry->getGlobalPosition(itPlus1->second, cPlus1);
-    double phiPlus1_raw = std::atan2(gPlus1.y(), gPlus1.x());
-
-    std::pair<double,double> para_errors_P = ClusterErrorPara::get_clusterv5_modified_error(cPlus1, rPlus1, itPlus1->second);
-    const double phiErrPlus1 = std::sqrt(std::max(0.0, para_errors_P.first)); // rad
-    const double sigma2Plus1 = phiErrPlus1 * phiErrPlus1;
-
-    // unwrap neighbors around current phi
-    const double phiCurrent = phiCurrent_raw; // keep measured
-    double phiMinus1 = phiCurrent + std::remainder(phiMinus1_raw - phiCurrent, 2.0 * M_PI);
-    double phiPlus1  = phiCurrent + std::remainder(phiPlus1_raw  - phiCurrent, 2.0 * M_PI);
-
-    // ============================================================
-    // Circle prediction at rCurrent with fixed curvature radius Rtrack
-    // ============================================================
-    double phiFit = 0.0;
-    double cxBest = 0.0, cyBest = 0.0;
-    double xBest  = 0.0, yBest  = 0.0;
-
-    const double phiWindowMargin = 0.20; // rad, small tolerance
-
-    const bool okFit = predictPhiFromNeighborsFixedCurvature(
-        rMinus1, phiMinus1,
-        rPlus1,  phiPlus1,
-        rCurrent, phiCurrent,
-        Rtrack,
-        phiWindowMargin,
-        phiFit,
-        &cxBest, &cyBest,
-        &xBest, &yBest);
-
-    if (!okFit)
+    if (itMinus1 == clustersByLayer.end() || itPlus1 == clustersByLayer.end())
     {
-      // If fixed-curvature solution fails, skip (or optionally fallback to linear)
       continue;
     }
 
-    // residual
-    const double dphi = std::remainder(phiCurrent - phiFit, 2.0 * M_PI);
-    const double residual_rphi = rCurrent * dphi;
+    // ============================================================
+    // Get GEOMETRY radii (precise, no uncertainty)
+    // ============================================================
+    PHG4TpcGeom* geoCurrent = tpcGeom->GetLayerCellGeom(currentLayer);
+    PHG4TpcGeom* geoMinus1 = tpcGeom->GetLayerCellGeom(layerMinus1);
+    PHG4TpcGeom* geoPlus1 = tpcGeom->GetLayerCellGeom(layerPlus1);
+    
+    if (!geoCurrent || !geoMinus1 || !geoPlus1) continue;
+    
+    const double rCurrent = geoCurrent->get_radius();  // PRECISE from geometry
+    const double rMinus1 = geoMinus1->get_radius();    // PRECISE from geometry
+    const double rPlus1 = geoPlus1->get_radius();      // PRECISE from geometry
 
     // ============================================================
-    // Error propagation: numerical derivatives wrt neighbor phis
-    // (keeps r exact; treats neighbor phi errors as independent)
+    // Get measured PHI values and their uncertainties
     // ============================================================
-    double sigma_phiFit = 0.0;
+    TrkrCluster* c = clustermap->findCluster(ckey);
+    if (!c) continue;
+    
+    const Acts::Vector3 gCurrent = geometry->getGlobalPosition(ckey, c);
+    const double phiCurrent = std::atan2(gCurrent.y(), gCurrent.x());
+    auto para_errors = ClusterErrorPara::get_clusterv5_modified_error(c, rCurrent, ckey);
+    const double phiErrCurrent = sqrt(para_errors.first) / rCurrent;  // radians
+    const double rphiErrCurrent = rCurrent * phiErrCurrent;  // cm
+
+    // Layer-1
+    TrkrCluster* cMinus1 = clustermap->findCluster(itMinus1->second);
+    if (!cMinus1) continue;
+    
+    const Acts::Vector3 gMinus1 = geometry->getGlobalPosition(itMinus1->second, cMinus1);
+    double phiMinus1 = std::atan2(gMinus1.y(), gMinus1.x());
+    
+    auto para_errors_Minus1 = ClusterErrorPara::get_clusterv5_modified_error(cMinus1, rMinus1, itMinus1->second);
+    const double phiErrMinus1 = sqrt(para_errors_Minus1.first) / rMinus1 ;  // radians
+    const double sigma2Minus1 = phiErrMinus1 * phiErrMinus1;     // rad²
+
+    // Layer+1
+    TrkrCluster* cPlus1 = clustermap->findCluster(itPlus1->second);
+    if (!cPlus1) continue;
+    
+    const Acts::Vector3 gPlus1 = geometry->getGlobalPosition(itPlus1->second, cPlus1);
+    double phiPlus1 = std::atan2(gPlus1.y(), gPlus1.x());
+    
+    auto para_errors_Plus1 = ClusterErrorPara::get_clusterv5_modified_error(cPlus1, rPlus1, itPlus1->second);
+    const double phiErrPlus1 = sqrt(para_errors_Plus1.first) / rPlus1;  // radians
+    const double sigma2Plus1 = phiErrPlus1 * phiErrPlus1;      // rad²
+
+    // Handle phi wrapping
+    phiMinus1 = phiCurrent + std::remainder(phiMinus1 - phiCurrent, 2.0 * M_PI);
+    phiPlus1  = phiCurrent + std::remainder(phiPlus1 - phiCurrent, 2.0 * M_PI);
+
+    // ============================================================
+    // CIRCULAR INTERPOLATION
+    // ============================================================
+    
+    // Method 1: Exact circular arc through 3 points
+    // For a circle in the r-φ plane with center at (r_c, φ_c) and radius R_circle
+    // We'll use a simpler approach: parabolic correction to linear fit
+    
+    // First, compute linear interpolation
+    const double slope_linear = (phiPlus1 - phiMinus1) / (rPlus1 - rMinus1);
+    const double intercept_linear = phiMinus1 - slope_linear * rMinus1;
+    const double phiFit_linear = intercept_linear + slope_linear * rCurrent;
+    
+    // Circular correction using track curvature
+    // For circular trajectory: Δφ ≈ linear_term + quadratic_term
+    // The quadratic correction accounts for the arc
+    
+    double phiFit = phiFit_linear;
+    const int circular_mode = 1; 
+    if (circular_mode==2 && std::abs(kappa) > 1e-9) // Only apply correction if curvature is significant
     {
-      // pick finite-diff steps
-      double epsM = std::max(1e-5, std::min(1e-2, 0.2 * std::max(phiErrMinus1, 1e-5)));
-      double epsP = std::max(1e-5, std::min(1e-2, 0.2 * std::max(phiErrPlus1,  1e-5)));
 
-      double phiFit_nom = phiFit;
-
-      // d(phiFit)/d(phiMinus1)
-      double phiFit_m_p=0, phiFit_m_m=0;
-      bool ok_m_p = predictPhiFromNeighborsFixedCurvature(
-          rMinus1, phiMinus1 + epsM,
-          rPlus1,  phiPlus1,
-          rCurrent, phiFit_nom, // unwrap around nominal fit to avoid 2pi jumps
-          Rtrack,
-          phiWindowMargin,
-          phiFit_m_p,
-          0,0,0,0);
-
-      bool ok_m_m = predictPhiFromNeighborsFixedCurvature(
-          rMinus1, phiMinus1 - epsM,
-          rPlus1,  phiPlus1,
-          rCurrent, phiFit_nom,
-          Rtrack,
-          phiWindowMargin,
-          phiFit_m_m,
-          0,0,0,0);
-
-      double dfdm = 0.0;
-      if (ok_m_p && ok_m_m)
+      // Distance from middle point to neighbors
+      const double dr_minus = rCurrent - rMinus1;
+      const double dr_plus = rPlus1 - rCurrent;
+      const double dr_total = rPlus1 - rMinus1;
+      
+      // For a circular arc, the second-order correction is:
+      // Δφ_correction = κ² × (dr_minus × dr_plus) / (2 × (1 + small_terms))
+      // This is the difference between circular arc and straight line
+      
+      // Simplified version (valid for small κr):
+      const double curvature_correction = 0.5 * kappa * kappa * dr_minus * dr_plus / dr_total;
+      
+      // More accurate version using exact circular geometry:
+      // s_minus = arc length from r_minus to r_current
+      // s_plus = arc length from r_current to r_plus
+      // For small angles, s ≈ sqrt(dr² + (r·dφ)²) ≈ r·dφ
+      
+      // Alternative: use exact 3-point circle fit
+      // Fit a circle through the 3 points in Cartesian coordinates
+      const double x1 = rMinus1 * std::cos(phiMinus1);
+      const double y1 = rMinus1 * std::sin(phiMinus1);
+      const double x2 = rCurrent * std::cos(phiFit_linear);  // use linear estimate
+      const double y2 = rCurrent * std::sin(phiFit_linear);
+      const double x3 = rPlus1 * std::cos(phiPlus1);
+      const double y3 = rPlus1 * std::sin(phiPlus1);
+      
+      // Circle center calculation
+      const double A = x1 - x2;
+      const double B = y1 - y2;
+      const double C = x1 - x3;
+      const double D = y1 - y3;
+      const double E = (x1*x1 - x2*x2 + y1*y1 - y2*y2) / 2.0;
+      const double F = (x1*x1 - x3*x3 + y1*y1 - y3*y3) / 2.0;
+      
+      const double det = A * D - B * C;
+      
+      if (std::abs(det) > 1e-9)
       {
-        phiFit_m_p = unwrapNear(phiFit_m_p, phiFit_nom);
-        phiFit_m_m = unwrapNear(phiFit_m_m, phiFit_nom);
-        dfdm = (phiFit_m_p - phiFit_m_m) / (2.0 * epsM);
+        const double x_center = (E * D - B * F) / det;
+        const double y_center = (A * F - E * C) / det;
+        
+        // Now find phi at rCurrent on this circle
+        // The point (x,y) at radius rCurrent satisfies:
+        // (x - x_center)² + (y - y_center)² = R_circle²
+        // x² + y² = rCurrent²
+        
+        const double R_circle_sq = (x1 - x_center) * (x1 - x_center) + 
+                                   (y1 - y_center) * (y1 - y_center);
+        const double R_circle = std::sqrt(R_circle_sq);
+        
+        // Solve for the intersection
+        const double a_coef = 1.0 + (x_center * x_center + y_center * y_center - R_circle_sq) / (rCurrent * rCurrent);
+        
+        if (a_coef >= 0)
+        {
+          // Use the angular difference as correction
+          const double phi_at_r = std::atan2(y_center, x_center);
+          const double opening_angle = std::acos(std::min(1.0, std::max(-1.0, 
+            (rCurrent * rCurrent + x_center * x_center + y_center * y_center - R_circle_sq) / 
+            (2.0 * rCurrent * std::sqrt(x_center * x_center + y_center * y_center)))));
+          
+          // Choose the solution closer to linear prediction
+          const double phi_solution_1 = phi_at_r + opening_angle;
+          const double phi_solution_2 = phi_at_r - opening_angle;
+          
+          const double diff1 = std::abs(std::remainder(phi_solution_1 - phiFit_linear, 2.0 * M_PI));
+          const double diff2 = std::abs(std::remainder(phi_solution_2 - phiFit_linear, 2.0 * M_PI));
+          
+          phiFit = (diff1 < diff2) ? phi_solution_1 : phi_solution_2;
+          std::cout<<"ClusterPhaseAnalysis::ComputeCircularFitFromNeighbors -- ckey "<<ckey
+                   <<" layer "<<currentLayer<<" using exact circular fit correction."<<std::endl;
+          std::cout<<"Circle radius R_circle "<<R_circle
+                   <<" center ( "<<x_center<<","<<y_center<<" )"
+                   <<" FOR KAPPA "<<kappa<<" 1/kappa "<<1.0/kappa
+                   <<std::endl;
+          
+        }
+        else
+        {
+          // Fallback to simple curvature correction
+          phiFit = phiFit_linear + curvature_correction;
+        }
       }
-
-      // d(phiFit)/d(phiPlus1)
-      double phiFit_p_p=0, phiFit_p_m=0;
-      bool ok_p_p = predictPhiFromNeighborsFixedCurvature(
-          rMinus1, phiMinus1,
-          rPlus1,  phiPlus1 + epsP,
-          rCurrent, phiFit_nom,
-          Rtrack,
-          phiWindowMargin,
-          phiFit_p_p,
-          0,0,0,0);
-
-      bool ok_p_m = predictPhiFromNeighborsFixedCurvature(
-          rMinus1, phiMinus1,
-          rPlus1,  phiPlus1 - epsP,
-          rCurrent, phiFit_nom,
-          Rtrack,
-          phiWindowMargin,
-          phiFit_p_m,
-          0,0,0,0);
-
-      double dfdp = 0.0;
-      if (ok_p_p && ok_p_m)
+      else
       {
-        phiFit_p_p = unwrapNear(phiFit_p_p, phiFit_nom);
-        phiFit_p_m = unwrapNear(phiFit_p_m, phiFit_nom);
-        dfdp = (phiFit_p_p - phiFit_p_m) / (2.0 * epsP);
+        // Points are collinear or calculation failed, use simple correction
+        phiFit = phiFit_linear + curvature_correction;
       }
-
-      const double var_phiFit = dfdm*dfdm*sigma2Minus1 + dfdp*dfdp*sigma2Plus1;
-      sigma_phiFit = std::sqrt(std::max(0.0, var_phiFit));
     }
+    else if (circular_mode == 1)
+    {
+      // distances in radius
+        const double dr_minus = rCurrent - rMinus1;
+        const double dr_plus  = rPlus1  - rCurrent;
 
-    const double sigma_rphiFit = rCurrent * sigma_phiFit;
+        // Track radius of curvature in the xy-plane
+        // kappa = q*0.3*B/pT is in 1/m (standard HEP convention), so convert to cm:
+        const double kappa_cm = kappa / 100.0;                 // 1/cm
+        const double rho_cm   = 1.0 / std::abs(kappa_cm);      // cm
 
-    // total uncertainty (current measurement ⊕ prediction)
-    const double total_sigma_rphi =
-        std::sqrt(rphiErrCurrent*rphiErrCurrent + sigma_rphiFit*sigma_rphiFit);
+        // Sign of bending (assumes Bz>0; if your Bz can be negative, include its sign)
+        const double bend_sign = (kappa_cm >= 0.0) ? +1.0 : -1.0;
 
-    // pull
+        // --- “Method 1” small-angle curvature correction ---
+        // This is a local second-order correction to linear interpolation.
+        // Dimensionless (radians) because dr^2 / (rho * r) is dimensionless.
+        const double curvature_correction =
+            bend_sign * 0.125 * (dr_minus * dr_plus) / (rho_cm * rCurrent);  // ~Δr^2/(8 ρ r)
+
+        phiFit = phiFit_linear + curvature_correction;
+
+        if (Verbosity() > 0)
+        {
+          std::cout << "ComputeCircularFitFromNeighbors -- using Method1 only: "
+                    << "rho_cm=" << rho_cm
+                    << " corr=" << curvature_correction
+                    << std::endl;
+        }
+    }
+     else if (circular_mode == 0)
+    {
+      // Use linear fit only
+      phiFit = phiFit_linear;
+    }
+    
+    
+    // Residual
+    const double dphi = std::remainder(phiCurrent - phiFit, 2.0 * M_PI);
+     double residual_rphi = rCurrent * dphi;
+    residual_rphi = residual_rphi/sqrt(3.0/2.0);// /sqrt(3.0/2.0); 
+    // ============================================================
+    // ERROR PROPAGATION
+    // ============================================================
+    
+    // Fractional distance from layer-1 to current layer
+    const double alpha = (rCurrent - rMinus1) / (rPlus1 - rMinus1);
+    
+    // The prediction variance (for both linear and circular, first order):
+    const double var_phiFit = (1.0 - alpha) * (1.0 - alpha) * sigma2Minus1 
+                            + alpha * alpha * sigma2Plus1;
+    
+    const double sigma_phiFit = std::sqrt(var_phiFit);  // radians
+    const double sigma_rphiFit = rCurrent * sigma_phiFit;  // cm
+    
+    // Total uncertainty
+    const double total_sigma_rphi = std::sqrt(rphiErrCurrent * rphiErrCurrent 
+                                            + sigma_rphiFit * sigma_rphiFit);
+    
+    // Pull
     const double pull_rphi = residual_rphi / std::max(total_sigma_rphi, 1e-12);
 
-    // store
-    resolution_rphi_map[ckey]        = static_cast<float>(residual_rphi);
-    resolution_phi_map[ckey]         = static_cast<float>(dphi);
-    resolution_rphi_error_map[ckey]  = static_cast<float>(total_sigma_rphi);
-    resolution_rphi_pull_map[ckey]   = static_cast<float>(pull_rphi);
+    // Store results
+    resolution_rphi_map[ckey] = static_cast<float>(residual_rphi);
+    resolution_phi_map[ckey] = static_cast<float>(dphi);
+    resolution_rphi_error_map[ckey] = static_cast<float>(total_sigma_rphi);
+    resolution_rphi_pull_map[ckey] = static_cast<float>(pull_rphi);
 
     if (Verbosity() > 0)
     {
-      std::cout
-        << "ClusterPhaseAnalysis::ComputeLinearFitFromNeighbors (CIRCLE) -- ckey " << ckey
-        << " layer " << currentLayer
-        << "\n  B=" << B << "T  pt=" << pt << " GeV  Rtrack=" << Rtrack << " cm"
-        << "\n  Radii (EXACT): r-1=" << rMinus1 << " r=" << rCurrent << " r+1=" << rPlus1
-        << "\n  Phi measured: " << phiCurrent << " ± " << phiErrCurrent << " rad"
-        << "\n  Neighbors: phi-1=" << phiMinus1 << " ± " << phiErrMinus1
-        << ", phi+1=" << phiPlus1 << " ± " << phiErrPlus1
-        << "\n  Circle center best: (" << cxBest << ", " << cyBest << ")"
-        << "\n  Predicted point at r: (" << xBest << ", " << yBest << ")"
-        << "\n  Predicted phiFit=" << phiFit << " ± " << sigma_phiFit << " rad"
-        << "\n  Residual: dphi=" << dphi << " rad = " << residual_rphi << " cm"
-        << "\n  Total error: " << total_sigma_rphi << " cm"
-        << "\n  Pull: " << pull_rphi
-        << std::endl;
+      std::cout << "ClusterPhaseAnalysis::ComputeCircularFitFromNeighbors -- ckey " << ckey
+                << " layer " << currentLayer
+                << "\n  Track: pT=" << pt << " GeV/c, charge=" << charge << ", κ=" << kappa << " cm⁻¹"
+                << "\n  Radii (EXACT): r-1=" << rMinus1 << " r=" << rCurrent << " r+1=" << rPlus1
+                << "\n  Phi measured: " << phiCurrent << " ± " << phiErrCurrent << " rad"
+                << "\n  Neighbors: phi-1=" << phiMinus1 << " ± " << phiErrMinus1 
+                << ", phi+1=" << phiPlus1 << " ± " << phiErrPlus1
+                << "\n  Linear fit: " << phiFit_linear << " rad"
+                << "\n  Circular fit: " << phiFit << " rad (correction = " << (phiFit - phiFit_linear) << ")"
+                << "\n  Predicted: phiFit=" << phiFit << " ± " << sigma_phiFit << " rad"
+                << "\n  Residual: dphi=" << dphi << " rad = " << residual_rphi << " cm"
+                << "\n  Total error: " << total_sigma_rphi << " cm"
+                << "\n  Pull: " << pull_rphi
+                << std::endl;
     }
   }
 }

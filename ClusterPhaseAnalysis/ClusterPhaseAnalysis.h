@@ -50,7 +50,8 @@ class ClusterPhaseAnalysis : public SubsysReco
   bool checkTrack(SvtxTrack *track);
   void FillClusters(SvtxTrack *track);
   void ComputeFitTruthAtLayer(SvtxTrack *track);
-  void ComputeLinearFitFromNeighbors(SvtxTrack *track);
+  //void ComputeLinearFitFromNeighbors(SvtxTrack *track);
+  void ComputeCircularFitFromNeighbors(SvtxTrack *track);
   void FindTruthClusters(uint64_t key, Acts::Vector3 glob);
   void FillHits(uint64_t ckey);
   void CalculatePhase(uint64_t ckey);
